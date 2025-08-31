@@ -169,28 +169,6 @@ async def save_messages_to_db(messages_list):
 
     finally:
         await conn.close()
-
-async def get_messages_for_analysis():
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
-
-    try:
-        query = """
-            SELECT 
-                messages.message_id,
-                messages.chat_id,
-                messages.text,
-                messages.is_from_company,
-                messages.created_at,
-                chats.title,
-                chats.client_name
-            FROM messages
-            JOIN chats ON messages.chat_id = chats.chat_id
-            ORDER BY messages.created_at
-        """
-        messages = await conn.fetch(query)
-
-
             
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []

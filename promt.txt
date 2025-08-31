@@ -27,19 +27,3 @@
 
 [МЕНЕДЖЕР]
 - 
-
-# Структурируем данные
-    result = []
-    for msg in messages:
-        result.append({
-            "message_id": msg["message_id"],
-            "chat_id": msg["chat_id"],
-            "text": msg["text"],
-            "is_from_company": msg["is_from_company"],
-            "created_at": msg["created_at"],
-            "chat_title": msg["title"],        # Обратите внимание: поле называется "title"
-            "client_name": msg["client_name"]
-        })
-    
-    logger.info(f"Получено {len(result)} сообщений для анализа")
-    return result
