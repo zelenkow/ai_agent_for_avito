@@ -1,5 +1,5 @@
 analyst/
 .env
 .gitignore
-goals.txt
+promt.txt
 backup.sql

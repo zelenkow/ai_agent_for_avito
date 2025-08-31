@@ -1,5 +1,5 @@
 analyst/
 .env
-backup.sql
 source analyst/bin/activate
 sudo service postgresql start (status)
+.dockerignore
