@@ -2,6 +2,7 @@ import os
 import logging
 import aiohttp
 import asyncpg
+import json
 from datetime import datetime 
 from cachetools import TTLCache
 from dotenv import load_dotenv
@@ -268,10 +269,12 @@ async def get_chat_data(chat_id):
         """
         record = await conn.fetchrow(query, chat_id)
 
+        messages = json.loads(record['messages']) if record['messages'] else []
+
         chat_data = {
             'chat_id': record['chat_id'],
             'chat_title': record['title'],
-            'messages': record['messages']
+            'messages': messages
         }
         
         return chat_data
@@ -280,8 +283,9 @@ async def get_chat_data(chat_id):
         await conn.close()
 
 def create_prompt(chat_data):
+    messages = chat_data['messages']
     formatted_lines = []
-    for msg in chat_data['messages']:
+    for msg in messages:
         role = "[МЕНЕДЖЕР]" if msg['is_from_company'] else "[КЛИЕНТ]"
         message_text = msg['text']
         formatted_lines.append(f"{role}\n- {message_text}")
@@ -290,8 +294,7 @@ def create_prompt(chat_data):
     
     system_prompt = """
 Ты — AI-ассистент для контроля качества коммуникации менеджеров в компании.
-Твоя задача — строго проанализировать диалог и вернуть ответ в формате JSON, 
-без любых других пояснений до или после.
+Твоя задача — строго проанализировать диалог и вернуть ответ в формате JSON, без любых других пояснений до или после.
 ВСЕГДА следуй предложенной схеме JSON.
 ВСЕ части ответа, включая комментарии и рекомендации, ДОЛЖНЫ быть написаны на РУССКОМ ЯЗЫКЕ.
 ЗАПРЕЩЕНО использовать английские слова и термины.
@@ -373,11 +376,9 @@ async def start(message: types.Message):
     prompt_data = create_prompt(chat_data)
         
     with open("system_prompt.txt", "w", encoding="utf-8") as f:
-        f.write("=== SYSTEM PROMPT ===\n")
         f.write(prompt_data["system"])
             
     with open("user_prompt.txt", "w", encoding="utf-8") as f:
-        f.write("=== USER PROMPT ===\n")
         f.write(prompt_data["user"])
 
 @dp.message()
