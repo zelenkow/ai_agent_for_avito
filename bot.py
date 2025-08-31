@@ -212,11 +212,173 @@ def map_avito_messages(raw_messages_data, chat_id):
 
     return mapped_messages
 
+async def get_chats_for_analysis():
+    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
+    conn = await asyncpg.connect(connection_string)
+
+    try:
+        query = """
+            SELECT 
+                chats.chat_id
+            FROM 
+                chats
+            LEFT JOIN 
+                chat_reports ON chats.chat_id = chat_reports.chat_id
+            WHERE 
+                chat_reports.chat_id IS NULL 
+                OR 
+                chats.updated_at > chat_reports.created_at
+            ORDER BY 
+                chats.updated_at DESC;
+        """
+
+        records = await conn.fetch(query)
+
+        chat_ids_for_analysis = []
+        for record in records:
+            chat_id = record['chat_id']
+            chat_ids_for_analysis.append(chat_id)
+
+        logger.info(f"Найдено чатов для анализа: {len(chat_ids_for_analysis)}")
+        return chat_ids_for_analysis
+    
+    finally:
+        await conn.close()
+
+async def get_chat_data(chat_id):
+    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
+    conn = await asyncpg.connect(connection_string)
+
+    try:
+        query = """
+            SELECT 
+                chats.chat_id,
+                chats.title,
+                json_agg(
+                    json_build_object(
+                        'text', messages.text,
+                        'is_from_company', messages.is_from_company,
+                        'created_at', messages.created_at
+                    ) ORDER BY messages.created_at ASC
+                ) as messages
+            FROM chats
+            LEFT JOIN messages ON chats.chat_id = messages.chat_id
+            WHERE chats.chat_id = $1
+            GROUP BY chats.chat_id, chats.title
+        """
+        record = await conn.fetchrow(query, chat_id)
+
+        chat_data = {
+            'chat_id': record['chat_id'],
+            'chat_title': record['title'],
+            'messages': record['messages']
+        }
+        
+        return chat_data
+        
+    finally:
+        await conn.close()
+
+def create_prompt(chat_data):
+    formatted_lines = []
+    for msg in chat_data['messages']:
+        role = "[МЕНЕДЖЕР]" if msg['is_from_company'] else "[КЛИЕНТ]"
+        message_text = msg['text']
+        formatted_lines.append(f"{role}\n- {message_text}")
+    
+    formatted_dialog = "\n\n".join(formatted_lines)
+    
+    system_prompt = """
+Ты — AI-ассистент для контроля качества коммуникации менеджеров в компании.
+Твоя задача — строго проанализировать диалог и вернуть ответ в формате JSON, 
+без любых других пояснений до или после.
+ВСЕГДА следуй предложенной схеме JSON.
+ВСЕ части ответа, включая комментарии и рекомендации, ДОЛЖНЫ быть написаны на РУССКОМ ЯЗЫКЕ.
+ЗАПРЕЩЕНО использовать английские слова и термины.
+""".strip()
+    
+    user_prompt = f"""
+Проанализируй диалог менеджера с клиентом в чате "{chat_data['chat_title']}".
+Учти, что [КЛИЕНТ] — это потенциальный покупатель, а [МЕНЕДЖЕР] — это сотрудник компании.
+
+Сообщения от КОМПАНИИ помечены [МЕНЕДЖЕР], от КЛИЕНТА - [КЛИЕНТ].
+
+ПРОАНАЛИЗИРУЙ СООБЩЕНИЯ [МЕНЕДЖЕР] и дай развернутую оценку по следующим критериям. Для каждого критерия дай ОБЩУЮ ОЦЕНКУ ("Высокая", "Средняя", "Низкая") и КРАТКОЕ ПОЯСНЕНИЕ на 1-2 предложения на русском языке.
+
+КРИТЕРИИ:
+1.  **Тональность коммуникации**: Общий эмоциональный настрой и вежливость.
+2.  **Профессионализм**: Использование корректной терминологии, компетентность в вопросах.
+3.  **Ясность изложения**: Насколько понятно, четко и структурировано менеджер доносит информацию.
+4.  **Решение проблем**: Способность выявлять потребности клиента и предлагать релевантные решения.
+5.  **Работа с возражениями**: Эффективность реакции на сомнения или негатив клиента. Если возражений не было, поставь оценку 'Нет возражений'.
+6.  **Завершение диалога**: Была ли сделана попытка корректно завершить коммуникацию (зафиксировать следующий шаг, попрощаться).
+
+ВСЕ оценки, комментарии и рекомендации ДОЛЖНЫ БЫТЬ НАПИСАНЫ НА РУССКОМ ЯЗЫКЕ. ЗАПРЕЩЕНО использовать английские слова, заменяй их русскими аналогами.
+
+В конце дай:
+- **Итоговую оценку**: Краткое резюме на 1-3 предложения на русском языке.
+- **Рекомендации**: 1-3 конкретных совета, что менеджер мог бы сделать лучше на русском языке
+
+ВЕРНИ ОТВЕТ В ФОРМАТЕ JSON СТРОГО И ТОЧНО ПО СЛЕДУЮЩЕЙ СХЕМЕ. НЕ ДОБАВЛЯЙ никаких других полей.
+
+{{
+  "tonality": {{
+    "grade": "Высокая",
+    "comment": "Менеджер сохранял доброжелательный и уважительный тон на протяжении всего диалога."
+  }},
+  "professionalism": {{
+    "grade": "Средняя", 
+    "comment": "Использовал корректную терминологию, но не уточнил важные технические детали по установке."
+  }},
+  "clarity": {{
+    "grade": "Высокая",
+    "comment": "Ответы были четкими и по делу, клиенту было легко понять варианты и цены."
+  }},
+  "problem_solving": {{
+    "grade": "Низкая",
+    "comment": "Не предложил альтернативу при отказе клиента от дорогого варианта."
+  }},
+  "objection_handling": {{
+    "grade": "Нет возражений",
+    "comment": "В диалоге возражений со стороны клиента не было."
+  }},
+  "closure": {{
+    "grade": "Высокая",
+    "comment": "Диалог завершен корректно, клиент приглашен для дальнейшего обращения."
+  }},
+  "summary": "Менеджер вежлив и коммуникабелен, но не проявил гибкости в продажах. Клиент ушел на подумать без конкретного решения.",
+  "recommendations": "Отработать технику предложения альтернатив. Заранее готовить ответы на частые возражения по цене."
+}}
+
+ДИАЛОГ:
+{formatted_dialog}
+""".strip()
+    
+    return {
+        "system": system_prompt,
+        "user": user_prompt
+    }        
+
 @dp.message(Command("report"))
 async def start(message: types.Message):
     token = await get_avito_token()
     await all_doing_for_chats(token)
     await all_doing_for_messages(token)
+
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    chats_for_analysis = await get_chats_for_analysis()
+    first_chat_id = chats_for_analysis[0]
+    chat_data = await get_chat_data(first_chat_id)
+    prompt_data = create_prompt(chat_data)
+        
+    with open("system_prompt.txt", "w", encoding="utf-8") as f:
+        f.write("=== SYSTEM PROMPT ===\n")
+        f.write(prompt_data["system"])
+            
+    with open("user_prompt.txt", "w", encoding="utf-8") as f:
+        f.write("=== USER PROMPT ===\n")
+        f.write(prompt_data["user"])
 
 @dp.message()
 async def send_way(message: types.Message):
