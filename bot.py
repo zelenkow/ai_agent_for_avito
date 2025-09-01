@@ -414,10 +414,10 @@ async def start(message: types.Message):
     prompt_data = create_prompt(chat_data)
     response = await send_to_deepseek(prompt_data)
 
-    beautiful_json = response['choices'][0]['message']['content']
+    analysis_json = response['choices'][0]['message']['content']
         
     with open("deepseek_response.json", "w", encoding="utf-8") as f:
-        f.write(beautiful_json)
+        f.write(analysis_json)
             
 @dp.message()
 async def send_way(message: types.Message):

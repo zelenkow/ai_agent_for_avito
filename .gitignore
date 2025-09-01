@@ -3,4 +3,3 @@ analyst/
 source analyst/bin/activate
 sudo service postgresql start (status)
 .dockerignore
-https://api.deepseek.com/v1/chat/completions
