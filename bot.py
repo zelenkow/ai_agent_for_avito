@@ -268,7 +268,10 @@ async def send_to_deepseek(prompt_data):
         ) as response:
             
             result = await response.json()
-            return result
+
+            content_json = result['choices'][0]['message']['content']
+
+            return json.loads(content_json)
             
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
@@ -413,12 +416,7 @@ async def start(message: types.Message):
     chat_data = await get_chat_data_for_analysis(first_chat_id)
     prompt_data = create_prompt(chat_data)
     response = await send_to_deepseek(prompt_data)
-
-    analysis_json = response['choices'][0]['message']['content']
-        
-    with open("deepseek_response.json", "w", encoding="utf-8") as f:
-        f.write(analysis_json)
-            
+    
 @dp.message()
 async def send_way(message: types.Message):
     await message.answer("Don't Do It")
