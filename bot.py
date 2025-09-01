@@ -18,6 +18,7 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
 DIKON_ID = os.getenv("DIKON_USER_ID")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 PG_HOST = os.getenv("PG_HOST")
 PG_PORT = os.getenv("PG_PORT")
@@ -240,7 +241,34 @@ async def get_chat_data_for_analysis(chat_id):
             'messages': messages
         }
         
-        return chat_data                
+        return chat_data
+
+async def send_to_deepseek(prompt_data):
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": prompt_data["system"]},
+            {"role": "user", "content": prompt_data["user"]}
+        ],
+        "temperature": 0.1,
+        "response_format": { "type": "json_object" }
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://api.deepseek.com/v1/chat/completions", 
+            headers=headers, 
+            json=payload,
+            timeout=60
+        ) as response:
+            
+            result = await response.json()
+            return result
             
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
@@ -381,16 +409,16 @@ async def start(message: types.Message):
 @dp.message(Command("start"))
 async def start(message: types.Message):
     chats_for_analysis = await get_chats_for_analysis()
-    first_chat_id = chats_for_analysis[0]
+    first_chat_id = chats_for_analysis[1]
     chat_data = await get_chat_data_for_analysis(first_chat_id)
     prompt_data = create_prompt(chat_data)
-        
-    with open("system_prompt.txt", "w", encoding="utf-8") as f:
-        f.write(prompt_data["system"])
-            
-    with open("user_prompt.txt", "w", encoding="utf-8") as f:
-        f.write(prompt_data["user"])
+    response = await send_to_deepseek(prompt_data)
 
+    beautiful_json = response['choices'][0]['message']['content']
+        
+    with open("deepseek_response.json", "w", encoding="utf-8") as f:
+        f.write(beautiful_json)
+            
 @dp.message()
 async def send_way(message: types.Message):
     await message.answer("Don't Do It")
@@ -399,5 +427,5 @@ if __name__ == "__main__":
 
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    
+
     dp.run_polling(bot)

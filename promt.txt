@@ -1,13 +1,3 @@
-payload = {
-    "model": "deepseek-chat",
-    "messages": [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt} 
-    ],
-    "temperature": 0.1,
-    "response_format": { "type": "json_object" }
-}
-
 system_prompt = """
 Ты — AI-ассистент для контроля качества коммуникации менеджеров в компании. 
 Твоя задача — строго проанализировать диалог и вернуть ответ в формате JSON, без любых других пояснений до или после.
@@ -72,22 +62,53 @@ user_prompt_template = """
 {formatted_dialog}
 """
 
-CREATE TABLE chat_reports (
-    chat_report_id SERIAL PRIMARY KEY,
-    chat_id VARCHAR NOT NULL REFERENCES chats(chat_id) ON DELETE CASCADE,
-    tonality_grade VARCHAR(20),
-    tonality_comment TEXT,
-    professionalism_grade VARCHAR(20),
-    professionalism_comment TEXT,
-    clarity_grade VARCHAR(20),
-    clarity_comment TEXT,
-    problem_solving_grade VARCHAR(20),
-    problem_solving_comment TEXT,
-    objection_handling_grade VARCHAR(20),
-    objection_handling_comment TEXT,
-    closure_grade VARCHAR(20),
-    closure_comment TEXT,
-    summary TEXT,
-    recommendations TEXT,
-    created_at TIMESTAMP
-);
+
+async def save_deepseek_to_db(analysis_json, chat_id):
+    """
+    Args:
+        analysis_json (str): JSON строка от Deepseek
+        chat_id (str): ID чата для связи
+        db_pool (asyncpg.Pool): Пул соединений с БД
+    """
+    
+        # Парсим JSON строку в словарь
+        analysis_data = json.loads(analysis_json)
+        
+        query = """
+            INSERT INTO chat_reports (
+                chat_id, tonality_grade, tonality_comment,
+                professionalism_grade, professionalism_comment,
+                clarity_grade, clarity_comment,
+                problem_solving_grade, problem_solving_comment,
+                objection_handling_grade, objection_handling_comment,
+                closure_grade, closure_comment,
+                summary, recommendations, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            RETURNING chat_report_id
+        """
+        
+        # Извлекаем данные из JSON
+        params = (
+            chat_id,
+            analysis_data['tonality']['grade'],
+            analysis_data['tonality']['comment'],
+            analysis_data['professionalism']['grade'],
+            analysis_data['professionalism']['comment'],
+            analysis_data['clarity']['grade'],
+            analysis_data['clarity']['comment'],
+            analysis_data['problem_solving']['grade'],
+            analysis_data['problem_solving']['comment'],
+            analysis_data['objection_handling']['grade'],
+            analysis_data['objection_handling']['comment'],
+            analysis_data['closure']['grade'],
+            analysis_data['closure']['comment'],
+            analysis_data['summary'],
+            analysis_data['recommendations'],
+            datetime.now()
+        )
+        
+        # Выполняем запрос
+        async with db_pool.acquire() as connection:
+            report_id = await connection.fetchval(query, *params)
+            print(f"Отчет сохранен с ID: {report_id}")
+            return report_id
