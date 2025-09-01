@@ -3,6 +3,7 @@ import logging
 import aiohttp
 import asyncpg
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime 
 from cachetools import TTLCache
 from dotenv import load_dotenv
@@ -26,8 +27,33 @@ PG_PASSWORD = os.getenv("PG_PASSWORD")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
+db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
+
+async def create_db_pool():
+    return await asyncpg.create_pool(
+        user=PG_USER,
+        password=PG_PASSWORD,
+        host=PG_HOST,
+        port=PG_PORT,
+        database=PG_DATABASE,
+        min_size=5,
+        max_size=20,
+        timeout=30
+    )
+
+async def on_startup():
+    global db_pool
+    logger.info("Создаем пул соединений с БД")
+    db_pool = await create_db_pool()
+    logger.info("Пул соединений создан")
+
+async def on_shutdown():
+    global db_pool
+    if db_pool:
+        logger.info("Закрываем пул соединений с БД")
+        await db_pool.close()
+        logger.info("Пул соединений закрыт")    
 
 async def get_avito_token():
     if 'avito_token' in token_cache:
@@ -95,23 +121,17 @@ async def get_avito_messages(access_token, chat_id):
             return raw_messages             
 
 async def get_chat_from_db():
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
+    async with get_connection() as conn:
 
-    try:
         query = "SELECT chat_id FROM chats;"
         chat_ids = await conn.fetch(query)
         chats_list = [record['chat_id'] for record in chat_ids]
         logger.info(f"Из БД получено {len(chats_list)} chat_id для обработки.")
         return chats_list
-    finally:
-        await conn.close()
 
 async def save_chats_to_db(mapped_chats):
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
+    async with get_connection() as conn:
 
-    try:
         upsert_query = """
             INSERT INTO chats (chat_id, title, client_name, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5)
@@ -134,15 +154,10 @@ async def save_chats_to_db(mapped_chats):
         logger.info(f"Успешно сохранено {len(mapped_chats)} чатов")
 
         return True
-    
-    finally:
-        await conn.close()
 
 async def save_messages_to_db(messages_list):
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
+    async with get_connection() as conn:
     
-    try:
         query = """
             INSERT INTO messages 
                 (message_id, chat_id, text, is_from_company, created_at)
@@ -168,8 +183,64 @@ async def save_messages_to_db(messages_list):
 
         return True
 
-    finally:
-        await conn.close()
+async def get_chats_for_analysis():
+    async with get_connection() as conn:
+
+        query = """
+            SELECT 
+                chats.chat_id
+            FROM 
+                chats
+            LEFT JOIN 
+                chat_reports ON chats.chat_id = chat_reports.chat_id
+            WHERE 
+                chat_reports.chat_id IS NULL 
+                OR 
+                chats.updated_at > chat_reports.created_at
+            ORDER BY 
+                chats.updated_at DESC;
+        """
+
+        records = await conn.fetch(query)
+
+        chat_ids_for_analysis = []
+        for record in records:
+            chat_id = record['chat_id']
+            chat_ids_for_analysis.append(chat_id)
+
+        logger.info(f"Найдено чатов для анализа: {len(chat_ids_for_analysis)}")
+        return chat_ids_for_analysis
+
+async def get_chat_data_for_analysis(chat_id):
+    async with get_connection() as conn:
+
+        query = """
+            SELECT 
+                chats.chat_id,
+                chats.title,
+                json_agg(
+                    json_build_object(
+                        'text', messages.text,
+                        'is_from_company', messages.is_from_company,
+                        'created_at', messages.created_at
+                    ) ORDER BY messages.created_at ASC
+                ) as messages
+            FROM chats
+            LEFT JOIN messages ON chats.chat_id = messages.chat_id
+            WHERE chats.chat_id = $1
+            GROUP BY chats.chat_id, chats.title
+        """
+        record = await conn.fetchrow(query, chat_id)
+
+        messages = json.loads(record['messages']) if record['messages'] else []
+
+        chat_data = {
+            'chat_id': record['chat_id'],
+            'chat_title': record['title'],
+            'messages': messages
+        }
+        
+        return chat_data                
             
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
@@ -212,75 +283,6 @@ def map_avito_messages(raw_messages_data, chat_id):
         mapped_messages.append(mapped_message)
 
     return mapped_messages
-
-async def get_chats_for_analysis():
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
-
-    try:
-        query = """
-            SELECT 
-                chats.chat_id
-            FROM 
-                chats
-            LEFT JOIN 
-                chat_reports ON chats.chat_id = chat_reports.chat_id
-            WHERE 
-                chat_reports.chat_id IS NULL 
-                OR 
-                chats.updated_at > chat_reports.created_at
-            ORDER BY 
-                chats.updated_at DESC;
-        """
-
-        records = await conn.fetch(query)
-
-        chat_ids_for_analysis = []
-        for record in records:
-            chat_id = record['chat_id']
-            chat_ids_for_analysis.append(chat_id)
-
-        logger.info(f"Найдено чатов для анализа: {len(chat_ids_for_analysis)}")
-        return chat_ids_for_analysis
-    
-    finally:
-        await conn.close()
-
-async def get_chat_data(chat_id):
-    connection_string = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DATABASE}"
-    conn = await asyncpg.connect(connection_string)
-
-    try:
-        query = """
-            SELECT 
-                chats.chat_id,
-                chats.title,
-                json_agg(
-                    json_build_object(
-                        'text', messages.text,
-                        'is_from_company', messages.is_from_company,
-                        'created_at', messages.created_at
-                    ) ORDER BY messages.created_at ASC
-                ) as messages
-            FROM chats
-            LEFT JOIN messages ON chats.chat_id = messages.chat_id
-            WHERE chats.chat_id = $1
-            GROUP BY chats.chat_id, chats.title
-        """
-        record = await conn.fetchrow(query, chat_id)
-
-        messages = json.loads(record['messages']) if record['messages'] else []
-
-        chat_data = {
-            'chat_id': record['chat_id'],
-            'chat_title': record['title'],
-            'messages': messages
-        }
-        
-        return chat_data
-        
-    finally:
-        await conn.close()
 
 def create_prompt(chat_data):
     messages = chat_data['messages']
@@ -360,7 +362,15 @@ def create_prompt(chat_data):
     return {
         "system": system_prompt,
         "user": user_prompt
-    }        
+    }
+
+@asynccontextmanager
+async def get_connection():
+    connection = await db_pool.acquire()
+    try:
+        yield connection
+    finally:
+        await db_pool.release(connection) 
 
 @dp.message(Command("report"))
 async def start(message: types.Message):
@@ -372,7 +382,7 @@ async def start(message: types.Message):
 async def start(message: types.Message):
     chats_for_analysis = await get_chats_for_analysis()
     first_chat_id = chats_for_analysis[0]
-    chat_data = await get_chat_data(first_chat_id)
+    chat_data = await get_chat_data_for_analysis(first_chat_id)
     prompt_data = create_prompt(chat_data)
         
     with open("system_prompt.txt", "w", encoding="utf-8") as f:
@@ -386,4 +396,8 @@ async def send_way(message: types.Message):
     await message.answer("Don't Do It")
 
 if __name__ == "__main__":
+
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
     dp.run_polling(bot)
