@@ -3,6 +3,7 @@ import logging
 import aiohttp
 import asyncpg
 import json
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime 
 from cachetools import TTLCache
@@ -31,6 +32,51 @@ dp = Dispatcher()
 db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
 
+async def main_avito_data(access_token):
+    raw_data_chats = await get_avito_chats(access_token)
+    map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
+    await save_chats_to_db(map_data_chats)
+    
+    all_messages_to_save = []
+    chats_list = await get_chat_from_db()
+        
+    for chat_id in chats_list:
+        raw_messages = await get_avito_messages(access_token, chat_id)
+        mapped_messages = map_avito_messages(raw_messages, chat_id)
+        all_messages_to_save.extend(mapped_messages)
+        
+    await save_messages_to_db(all_messages_to_save)
+
+    logger.info("Cинхронизация данных с Авито завершена успешно")
+    return True
+        
+async def main_llm_data():
+    chat_ids = await get_chats_for_analysis()
+    
+    if not chat_ids:
+        logger.info("Нет чатов для анализа.")
+        return
+    
+    semaphore = asyncio.Semaphore(20)
+    
+    tasks = []
+    for chat_id in chat_ids:
+        task = analyze_single_chat(chat_id, semaphore)
+        tasks.append(task)
+    
+    await asyncio.gather(*tasks, return_exceptions=True)
+    
+    logger.info(f"Оркестратор завершил работу. Обработано чатов: {len(chat_ids)}")
+
+async def analyze_single_chat(chat_id, semaphore):
+    async with semaphore:
+            chat_data = await get_chat_data_for_analysis(chat_id)
+            prompt_data = create_prompt(chat_data)
+            analysis_result = await send_to_deepseek(prompt_data)
+            mapped_data = map_response_llm(analysis_result, chat_id)
+            await save_report_to_db(mapped_data)
+            logger.info(f"Анализ для чата {chat_id} завершен успешно.")
+
 async def create_db_pool():
     return await asyncpg.create_pool(
         user=PG_USER,
@@ -39,7 +85,7 @@ async def create_db_pool():
         port=PG_PORT,
         database=PG_DATABASE,
         min_size=5,
-        max_size=20,
+        max_size=30,
         timeout=30
     )
 
@@ -79,27 +125,6 @@ async def get_avito_token():
 
             logger.info("Функция get_avito_token завершена успешно")
             return new_token
-
-async def all_doing_for_chats(access_token):
-    raw_data_chats = await get_avito_chats(access_token)
-
-    map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
-
-    await save_chats_to_db(map_data_chats)
-    logger.info("Функция all_doing_for_chats завершена успешно")
-
-async def all_doing_for_messages(access_token):
-    all_messages_to_save = []
-
-    chats_list = await get_chat_from_db()
-
-    for chat_id in chats_list:
-        raw_messages = await get_avito_messages(access_token, chat_id)
-        mapped_messages = map_avito_messages(raw_messages, chat_id)
-        all_messages_to_save.extend(mapped_messages)
-
-    await save_messages_to_db(all_messages_to_save)
-    logger.info("Функция all_doing_for_messages завершена успешно")
 
 async def get_avito_chats(access_token):
     headers =  {'Authorization': f'Bearer {access_token}'}
@@ -483,21 +508,11 @@ async def get_connection():
 @dp.message(Command("report"))
 async def start(message: types.Message):
     token = await get_avito_token()
-    await all_doing_for_chats(token)
-    await all_doing_for_messages(token)
+    await main_avito_data(token)
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    chats_for_analysis = await get_chats_for_analysis()
-    first_chat_id = chats_for_analysis[1]
-    chat_data = await get_chat_data_for_analysis(first_chat_id)
-    prompt_data = create_prompt(chat_data)
-    response = await send_to_deepseek(prompt_data)
-    mapped_data = map_response_llm(response, first_chat_id)
-    await save_report_to_db(mapped_data)
-
-    #with open("parsed_data.json", "w", encoding="utf-8") as f:
-        #json.dump(mapped_data, f, ensure_ascii=False, indent=4)
+    await main_llm_data()
 
 @dp.message()
 async def send_way(message: types.Message):
