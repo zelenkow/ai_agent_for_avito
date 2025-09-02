@@ -133,7 +133,7 @@ async def get_chat_from_db():
 async def save_chats_to_db(mapped_chats):
     async with get_connection() as conn:
 
-        upsert_query = """
+        query = """
             INSERT INTO chats (chat_id, title, client_name, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (chat_id)
@@ -144,7 +144,7 @@ async def save_chats_to_db(mapped_chats):
     
         for chat in mapped_chats:
             await conn.execute(
-                upsert_query,
+                query,
                 chat['chat_id'],
                 chat['title'],
                 chat['client_name'],
@@ -183,6 +183,59 @@ async def save_messages_to_db(messages_list):
         logger.info(f"Успешно сохранено {len(messages_list)} сообщений в БД")
 
         return True
+    
+async def save_report_to_db(mapped_data):
+         async with get_connection() as conn:
+             
+            query = """
+                INSERT INTO chat_reports
+                    (chat_id, 
+                    tonality_grade, tonality_comment, professionalism_grade, professionalism_comment,
+                    clarity_grade, clarity_comment, problem_solving_grade, problem_solving_comment,
+                    objection_handling_grade, objection_handling_comment, closure_grade, closure_comment, 
+                    summary, recommendations, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                ON CONFLICT (chat_id)
+                DO UPDATE SET
+                    tonality_grade = EXCLUDED.tonality_grade,
+                    tonality_comment = EXCLUDED.tonality_comment,
+                    professionalism_grade = EXCLUDED.professionalism_grade,
+                    professionalism_comment = EXCLUDED.professionalism_comment,
+                    clarity_grade = EXCLUDED.clarity_grade,
+                    clarity_comment = EXCLUDED.clarity_comment,
+                    problem_solving_grade = EXCLUDED.problem_solving_grade,
+                    problem_solving_comment = EXCLUDED.problem_solving_comment,
+                    objection_handling_grade = EXCLUDED.objection_handling_grade,
+                    objection_handling_comment = EXCLUDED.objection_handling_comment,
+                    closure_grade = EXCLUDED.closure_grade,
+                    closure_comment = EXCLUDED.closure_comment,
+                    summary = EXCLUDED.summary,
+                    recommendations = EXCLUDED.recommendations,
+                    created_at = EXCLUDED.created_at
+                WHERE EXCLUDED.created_at > chat_reports.created_at
+            """
+
+            await conn.execute(
+                query,
+                mapped_data['chat_id'],
+                mapped_data['tonality_grade'],
+                mapped_data['tonality_comment'],
+                mapped_data['professionalism_grade'],
+                mapped_data['professionalism_comment'],
+                mapped_data['clarity_grade'],
+                mapped_data['clarity_comment'],
+                mapped_data['problem_solving_grade'],
+                mapped_data['problem_solving_comment'],
+                mapped_data['objection_handling_grade'],
+                mapped_data['objection_handling_comment'],
+                mapped_data['closure_grade'],
+                mapped_data['closure_comment'],
+                mapped_data['summary'],
+                mapped_data['recommendations'],
+                mapped_data['created_at']
+            )
+            logger.info("Функция save_report_to_db завершена успешно")
+            return True
 
 async def get_chats_for_analysis():
     async with get_connection() as conn:
@@ -271,6 +324,7 @@ async def send_to_deepseek(prompt_data):
 
             content_json = result['choices'][0]['message']['content']
 
+            logger.info("Функция send_to_deepseek завершена успешно")
             return json.loads(content_json)
             
 def map_avito_chats(raw_chats_data, my_user_id):
@@ -314,6 +368,29 @@ def map_avito_messages(raw_messages_data, chat_id):
         mapped_messages.append(mapped_message)
 
     return mapped_messages
+
+def map_response_llm (response, chat_id):
+    
+    mapped_data = {
+        'chat_id': chat_id,
+        'tonality_grade': response.get('tonality', {}).get('grade', ''),
+        'tonality_comment': response.get('tonality', {}).get('comment', ''),
+        'professionalism_grade': response.get('professionalism', {}).get('grade', ''),
+        'professionalism_comment': response.get('professionalism', {}).get('comment', ''),
+        'clarity_grade': response.get('clarity', {}).get('grade', ''),
+        'clarity_comment': response.get('clarity', {}).get('comment', ''),
+        'problem_solving_grade': response.get('problem_solving', {}).get('grade', ''),
+        'problem_solving_comment': response.get('problem_solving', {}).get('comment', ''),
+        'objection_handling_grade': response.get('objection_handling', {}).get('grade', ''),
+        'objection_handling_comment': response.get('objection_handling', {}).get('comment', ''),
+        'closure_grade': response.get('closure', {}).get('grade', ''),
+        'closure_comment': response.get('closure', {}).get('comment', ''),
+        'summary': response.get('summary', ''),
+        'recommendations': response.get('recommendations', ''),
+        'created_at': datetime.now()
+    }
+    logger.info("Функция map_avito_messages завершена успешно")
+    return mapped_data
 
 def create_prompt(chat_data):
     messages = chat_data['messages']
@@ -416,7 +493,12 @@ async def start(message: types.Message):
     chat_data = await get_chat_data_for_analysis(first_chat_id)
     prompt_data = create_prompt(chat_data)
     response = await send_to_deepseek(prompt_data)
-    
+    mapped_data = map_response_llm(response, first_chat_id)
+    await save_report_to_db(mapped_data)
+
+    #with open("parsed_data.json", "w", encoding="utf-8") as f:
+        #json.dump(mapped_data, f, ensure_ascii=False, indent=4)
+
 @dp.message()
 async def send_way(message: types.Message):
     await message.answer("Don't Do It")
