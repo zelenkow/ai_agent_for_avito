@@ -4,11 +4,12 @@ import aiohttp
 import asyncpg
 import json
 import asyncio
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from contextlib import asynccontextmanager
-from datetime import datetime 
+from datetime import datetime
 from cachetools import TTLCache
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
@@ -257,6 +258,32 @@ async def save_report_to_db(mapped_data):
             )
 
             return True
+         
+async def get_reports_from_db(start_date, end_date):
+    """Получает отчеты из БД за указанный период"""
+    async with get_connection() as conn:
+        try:
+            # SQL запрос для получения отчетов за период
+            query = """
+                SELECT * FROM chat_reports 
+                WHERE created_at BETWEEN $1 AND $2 
+                ORDER BY created_at DESC
+            """
+            
+            # Выполняем запрос с параметрами
+            records = await conn.fetch(query, start_date, end_date)
+            
+            # Преобразуем записи в список словарей
+            reports = []
+            for record in records:
+                reports.append(dict(record))  # Преобразуем asyncpg.Record в dict
+                
+            logger.info(f"Найдено отчетов за период {start_date} - {end_date}: {len(reports)}")
+            return reports
+            
+        except Exception as e:
+            logger.error(f"Ошибка при получении отчетов из БД: {e}")
+            return []  # Возвращаем пустой список в случае ошибки         
 
 async def get_chats_for_analysis():
     async with get_connection() as conn:
@@ -497,6 +524,45 @@ def create_prompt(chat_data):
         "user": user_prompt
     }
 
+def format_single_report(report_data):
+    """Форматирует один отчет в красивое сообщение для Telegram"""
+    
+    # Создаем строку с оценками
+    grades_text = ""
+    criteria = [
+        ("Тональность", "tonality_grade", "tonality_comment"),
+        ("Профессионализм", "professionalism_grade", "professionalism_comment"),
+        ("Ясность", "clarity_grade", "clarity_comment"),
+        ("Решение проблем", "problem_solving_grade", "problem_solving_comment"),
+        ("Работа с возражениями", "objection_handling_grade", "objection_handling_comment"),
+        ("Завершение", "closure_grade", "closure_comment")
+    ]
+    
+    for name, grade_key, comment_key in criteria:
+        grade = report_data.get(grade_key, 'Н/Д')
+        comment = report_data.get(comment_key, '')
+        if grade and grade != 'Н/Д':
+            grades_text += f"• <b>{name}:</b> {grade}\n"
+            if comment:
+                grades_text += f"  <i>{comment}</i>\n\n"
+        else:
+            grades_text += f"• <b>{name}:</b> Н/Д\n\n"
+    
+    # Формируем итоговое сообщение
+    return f"""
+📋 <b>Чат:</b> {report_data.get('chat_title', 'Без названия')}
+👤 <b>Клиент:</b> {report_data.get('client_name', 'Неизвестен')}
+📅 <b>Дата анализа:</b> {report_data['created_at'].strftime('%d.%m.%Y %H:%M') if report_data.get('created_at') else 'Н/Д'}
+
+<b>Оценки качества:</b>
+{grades_text}
+<b>Итог:</b>
+{report_data.get('summary', 'Нет информации')}
+
+<b>Рекомендации:</b>
+{report_data.get('recommendations', 'Нет рекомендаций')}
+"""
+
 @asynccontextmanager
 async def get_connection():
     connection = await db_pool.acquire()
@@ -505,14 +571,66 @@ async def get_connection():
     finally:
         await db_pool.release(connection) 
 
-@dp.message(Command("report"))
+@dp.message(Command("avito"))
 async def start(message: types.Message):
+    await message.answer("Начинаю синхронизацию данных с Авито")
     token = await get_avito_token()
     await main_avito_data(token)
+    await message.answer("Синхронизация данных с Авито успешно завершена")
 
-@dp.message(Command("start"))
+@dp.message(Command("llm"))
 async def start(message: types.Message):
+    await message.answer("Начинаю ИИ-Анализ данных")
     await main_llm_data()
+    await message.answer("ИИ-Анализ данных завершен успешно")
+
+@dp.message(Command("report"))
+async def report(message: types.Message):
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Сегодня", callback_data="report_today")],
+            [InlineKeyboardButton(text="Вчера", callback_data="report_yesterday")],
+            [InlineKeyboardButton(text="Неделя", callback_data="report_week")],
+            [InlineKeyboardButton(text="Месяц", callback_data="report_month")],
+            [InlineKeyboardButton(text="Указать свой период", callback_data="report_custom")]
+        ]
+    )  
+    await message.answer("Введите период:", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "report_custom")
+async def custom_report(callback: types.CallbackQuery):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        "Пример:\n"
+        "01.02.2025-23.02.2025",
+    )
+    await callback.answer()
+
+@dp.message(lambda message: (
+    message.text and
+    '-' in message.text and
+    len(message.text.split('-')) == 2 and
+    all(part.count('.') == 2 for part in message.text.split('-')) and
+    all(len(part.split('.')) == 3 for part in message.text.split('-')) and
+    all(component.isdigit() for part in message.text.split('-') for component in part.split('.')) and
+    all(len(part.split('.')[2]) == 4 for part in message.text.split('-'))
+))
+async def process_date_period(message: types.Message):
+    start_str, end_str = message.text.split('-')
+    start_date = datetime.strptime(start_str, '%d.%m.%Y')
+    end_date = datetime.strptime(end_str, '%d.%m.%Y')
+    reports = await get_reports_from_db(start_date, end_date)
+
+    if not reports:
+        await message.answer(f"За период {start_str} - {end_str} отчетов не найдено.")
+        return
+    
+    for report in reports:
+        report_text = format_single_report(report)
+        await message.answer(report_text, parse_mode='HTML')
+        await asyncio.sleep(0.5)
+
+    await message.answer("Отчеты за указанный период сформированы!")  
 
 @dp.message()
 async def send_way(message: types.Message):
