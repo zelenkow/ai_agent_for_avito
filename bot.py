@@ -54,9 +54,10 @@ async def main_llm_data():
     chat_ids = await get_chats_for_analysis()
     
     if not chat_ids:
-        logger.info("Нет чатов для анализа.")
+        logger.info("Нет новых чатов для анализа.")
         return
     
+    #chat_ids = chat_ids[:1]
     semaphore = asyncio.Semaphore(20)
     
     tasks = []
@@ -66,16 +67,15 @@ async def main_llm_data():
     
     await asyncio.gather(*tasks, return_exceptions=True)
     
-    logger.info(f"Оркестратор завершил работу. Обработано чатов: {len(chat_ids)}")
+    logger.info(f"Анализ {len(chat_ids)} чатов завершен")
 
 async def analyze_single_chat(chat_id, semaphore):
     async with semaphore:
             chat_data = await get_chat_data_for_analysis(chat_id)
             prompt_data = create_prompt(chat_data)
             analysis_result = await send_to_deepseek(prompt_data)
-            mapped_data = map_response_llm(analysis_result, chat_id)
+            mapped_data = map_response_llm(analysis_result, chat_id, chat_data)
             await save_report_to_db(mapped_data)
-            logger.info(f"Анализ для чата {chat_id} завершен успешно.")
 
 async def create_db_pool():
     return await asyncpg.create_pool(
@@ -91,16 +91,14 @@ async def create_db_pool():
 
 async def on_startup():
     global db_pool
-    logger.info("Создаем пул соединений с БД")
     db_pool = await create_db_pool()
-    logger.info("Пул соединений создан")
+    logger.info("Пул соединений БД открыт")
 
 async def on_shutdown():
     global db_pool
     if db_pool:
-        logger.info("Закрываем пул соединений с БД")
         await db_pool.close()
-        logger.info("Пул соединений закрыт")    
+        logger.info("Пул соединений БД закрыт")    
 
 async def get_avito_token():
     if 'avito_token' in token_cache:
@@ -123,7 +121,6 @@ async def get_avito_token():
             new_token = token_data["access_token"]
             token_cache['avito_token'] = new_token
 
-            logger.info("Функция get_avito_token завершена успешно")
             return new_token
 
 async def get_avito_chats(access_token):
@@ -152,7 +149,6 @@ async def get_chat_from_db():
         query = "SELECT chat_id FROM chats;"
         chat_ids = await conn.fetch(query)
         chats_list = [record['chat_id'] for record in chat_ids]
-        logger.info(f"Из БД получено {len(chats_list)} chat_id для обработки.")
         return chats_list
 
 async def save_chats_to_db(mapped_chats):
@@ -176,8 +172,6 @@ async def save_chats_to_db(mapped_chats):
                 chat['created_at'],
                 chat['updated_at'],
             )
-        
-        logger.info(f"Успешно сохранено {len(mapped_chats)} чатов")
 
         return True
 
@@ -205,8 +199,6 @@ async def save_messages_to_db(messages_list):
         
         await conn.executemany(query, records)
 
-        logger.info(f"Успешно сохранено {len(messages_list)} сообщений в БД")
-
         return True
     
 async def save_report_to_db(mapped_data):
@@ -214,14 +206,16 @@ async def save_report_to_db(mapped_data):
              
             query = """
                 INSERT INTO chat_reports
-                    (chat_id, 
+                    (chat_id, chat_title, client_name, 
                     tonality_grade, tonality_comment, professionalism_grade, professionalism_comment,
                     clarity_grade, clarity_comment, problem_solving_grade, problem_solving_comment,
                     objection_handling_grade, objection_handling_comment, closure_grade, closure_comment, 
                     summary, recommendations, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 ON CONFLICT (chat_id)
                 DO UPDATE SET
+                    chat_title = EXCLUDED.chat_title,
+                    client_name = EXCLUDED.client_name,
                     tonality_grade = EXCLUDED.tonality_grade,
                     tonality_comment = EXCLUDED.tonality_comment,
                     professionalism_grade = EXCLUDED.professionalism_grade,
@@ -243,6 +237,8 @@ async def save_report_to_db(mapped_data):
             await conn.execute(
                 query,
                 mapped_data['chat_id'],
+                mapped_data['chat_title'],
+                mapped_data['client_name'],
                 mapped_data['tonality_grade'],
                 mapped_data['tonality_comment'],
                 mapped_data['professionalism_grade'],
@@ -259,7 +255,7 @@ async def save_report_to_db(mapped_data):
                 mapped_data['recommendations'],
                 mapped_data['created_at']
             )
-            logger.info("Функция save_report_to_db завершена успешно")
+
             return True
 
 async def get_chats_for_analysis():
@@ -287,7 +283,6 @@ async def get_chats_for_analysis():
             chat_id = record['chat_id']
             chat_ids_for_analysis.append(chat_id)
 
-        logger.info(f"Найдено чатов для анализа: {len(chat_ids_for_analysis)}")
         return chat_ids_for_analysis
 
 async def get_chat_data_for_analysis(chat_id):
@@ -297,6 +292,7 @@ async def get_chat_data_for_analysis(chat_id):
             SELECT 
                 chats.chat_id,
                 chats.title,
+                chats.client_name,
                 json_agg(
                     json_build_object(
                         'text', messages.text,
@@ -307,7 +303,7 @@ async def get_chat_data_for_analysis(chat_id):
             FROM chats
             LEFT JOIN messages ON chats.chat_id = messages.chat_id
             WHERE chats.chat_id = $1
-            GROUP BY chats.chat_id, chats.title
+            GROUP BY chats.chat_id, chats.title, chats.client_name
         """
         record = await conn.fetchrow(query, chat_id)
 
@@ -316,6 +312,7 @@ async def get_chat_data_for_analysis(chat_id):
         chat_data = {
             'chat_id': record['chat_id'],
             'chat_title': record['title'],
+            'chat_client_name': record['client_name'],
             'messages': messages
         }
         
@@ -349,14 +346,13 @@ async def send_to_deepseek(prompt_data):
 
             content_json = result['choices'][0]['message']['content']
 
-            logger.info("Функция send_to_deepseek завершена успешно")
             return json.loads(content_json)
             
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
     
     for chat in raw_chats_data.get('chats', []):
-        client_name = 'Неизвестный клиент'
+        client_name = ''
         for user in chat.get('users', []):
             if user.get('id') != my_user_id and user.get('name'):
                 client_name = user['name']
@@ -394,10 +390,14 @@ def map_avito_messages(raw_messages_data, chat_id):
 
     return mapped_messages
 
-def map_response_llm (response, chat_id):
+def map_response_llm (response, chat_id, chat_data):
+    chat_title = chat_data.get('chat_title', '')
+    client_name = chat_data.get('chat_client_name', '')
     
     mapped_data = {
         'chat_id': chat_id,
+        'chat_title': chat_title,
+        'client_name': client_name,
         'tonality_grade': response.get('tonality', {}).get('grade', ''),
         'tonality_comment': response.get('tonality', {}).get('comment', ''),
         'professionalism_grade': response.get('professionalism', {}).get('grade', ''),
@@ -414,7 +414,7 @@ def map_response_llm (response, chat_id):
         'recommendations': response.get('recommendations', ''),
         'created_at': datetime.now()
     }
-    logger.info("Функция map_avito_messages завершена успешно")
+    
     return mapped_data
 
 def create_prompt(chat_data):
