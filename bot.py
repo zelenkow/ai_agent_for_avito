@@ -8,10 +8,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from cachetools import TTLCache
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, BaseMiddleware, types
 from aiogram.filters import Command
+from aiogram.types import Update
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger('aiogram').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -31,6 +33,35 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
+
+class LoggingMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: Update, data):
+        # Получаем информацию о чате и сообщении
+        if hasattr(event, 'message') and event.message:
+            chat_id = event.message.chat.id
+            message_text = getattr(event.message, 'text', 'None')
+            event_type = 'message'
+        else:
+            # На случай, если это другой тип update (например, callback)
+            chat_id = getattr(event, 'chat', {}).get('id', 'N/A') if hasattr(event, 'chat') else 'N/A'
+            message_text = 'Not a text message'
+            event_type = getattr(event, 'event_type', type(event).__name__)
+        
+        # Логируем входящее сообщение/событие
+        logger.info(f"🟢 INCOMING UPDATE: {event.update_id} | Type: {event_type} | Chat ID: {chat_id} | Text: '{message_text}'")
+        
+        try:
+            # Передаем управление следующему middleware или хэндлеру
+            result = await handler(event, data)
+            return result
+        except Exception as e:
+            # Логируем ошибку, если она произошла при обработке
+            logger.error(f"🔴 ERROR in handler for update {event.update_id}: {e}")
+            raise
+        finally:
+            # Логируем завершение обработки
+            logger.info(f"🟣 UPDATE {event.update_id} PROCESSED")
+dp.update.outer_middleware(LoggingMiddleware())            
 
 async def main_avito_data(access_token):
     raw_data_chats = await get_avito_chats(access_token)
@@ -57,7 +88,6 @@ async def main_llm_data():
         logger.info("Нет новых чатов для анализа.")
         return
     
-    #chat_ids = chat_ids[:1]
     semaphore = asyncio.Semaphore(20)
     
     tasks = []
