@@ -571,25 +571,12 @@ async def start(message: types.Message):
 
 @dp.message(Command("report"))
 async def report(message: types.Message):
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Сегодня", callback_data="report_today")],
-            [InlineKeyboardButton(text="Вчера", callback_data="report_yesterday")],
-            [InlineKeyboardButton(text="Неделя", callback_data="report_week")],
-            [InlineKeyboardButton(text="Месяц", callback_data="report_month")],
-            [InlineKeyboardButton(text="Указать свой период", callback_data="report_custom")]
-        ]
-    )  
-    await message.answer("Введите период:", reply_markup=keyboard)
-
-@dp.callback_query(F.data == "report_custom")
-async def custom_report(callback: types.CallbackQuery):
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(
+    await message.answer(
+        "Введите период в формате:\n"
+        "ДД.ММ.ГГГГ-ДД.ММ.ГГГГ\n\n"
         "Пример:\n"
-        "01.02.2025-23.02.2025",
+        "01.02.2025-23.02.2025"
     )
-    await callback.answer()
 
 @dp.message(lambda message: (
     message.text and
