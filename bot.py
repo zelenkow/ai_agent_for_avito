@@ -8,12 +8,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from cachetools import TTLCache
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, BaseMiddleware, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Update
 
-logging.basicConfig(level=logging.INFO)
-logging.getLogger('aiogram').setLevel(logging.WARNING)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -34,34 +32,19 @@ dp = Dispatcher()
 db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
 
-class LoggingMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event: Update, data):
-        # Получаем информацию о чате и сообщении
-        if hasattr(event, 'message') and event.message:
-            chat_id = event.message.chat.id
-            message_text = getattr(event.message, 'text', 'None')
-            event_type = 'message'
-        else:
-            # На случай, если это другой тип update (например, callback)
-            chat_id = getattr(event, 'chat', {}).get('id', 'N/A') if hasattr(event, 'chat') else 'N/A'
-            message_text = 'Not a text message'
-            event_type = getattr(event, 'event_type', type(event).__name__)
-        
-        # Логируем входящее сообщение/событие
-        logger.info(f"🟢 INCOMING UPDATE: {event.update_id} | Type: {event_type} | Chat ID: {chat_id} | Text: '{message_text}'")
-        
-        try:
-            # Передаем управление следующему middleware или хэндлеру
-            result = await handler(event, data)
-            return result
-        except Exception as e:
-            # Логируем ошибку, если она произошла при обработке
-            logger.error(f"🔴 ERROR in handler for update {event.update_id}: {e}")
-            raise
-        finally:
-            # Логируем завершение обработки
-            logger.info(f"🟣 UPDATE {event.update_id} PROCESSED")
-dp.update.outer_middleware(LoggingMiddleware())            
+def create_logging_session():
+    trace_config = aiohttp.TraceConfig()
+    
+    async def on_request_start(_, __, params):
+        logger.info(f"🌐 HTTP Request: {params.method} {params.url}")
+
+    async def on_request_end(_, __, params):
+        logger.info(f"🌐 HTTP Response: {params.url} -> {params.response.status}")
+
+    trace_config.on_request_start.append(on_request_start)
+    trace_config.on_request_end.append(on_request_end)
+    
+    return aiohttp.ClientSession(trace_configs=[trace_config])
 
 async def main_avito_data(access_token):
     raw_data_chats = await get_avito_chats(access_token)
@@ -142,7 +125,8 @@ async def get_avito_token():
         'client_secret': CLIENT_SECRET,
         'grant_type': 'client_credentials'
     }
-    async with aiohttp.ClientSession() as session:
+    session = create_logging_session()
+    try:    
         async with session.post(
             "https://api.avito.ru/token",
             data=data_api,
@@ -150,28 +134,35 @@ async def get_avito_token():
             token_data = await response.json()
             new_token = token_data["access_token"]
             token_cache['avito_token'] = new_token
-
             return new_token
+    finally:
+        await session.close()
 
 async def get_avito_chats(access_token):
     headers =  {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100,'offset': 0}
     url = f"https://api.avito.ru/messenger/v2/accounts/{DIKON_ID}/chats"
 
-    async with aiohttp.ClientSession() as session:
+    session = create_logging_session()
+    try:
         async with session.get(url, headers=headers, params=params) as response:
             raw_chats = await response.json()
             return raw_chats
+    finally:
+        await session.close()   
 
 async def get_avito_messages(access_token, chat_id):
     headers = {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100, 'offset': 0}
     url = f"https://api.avito.ru/messenger/v3/accounts/{DIKON_ID}/chats/{chat_id}/messages"
 
-    async with aiohttp.ClientSession() as session:
+    session = create_logging_session()
+    try:
         async with session.get(url, headers=headers, params=params) as response:
             raw_messages = await response.json()
-            return raw_messages             
+            return raw_messages
+    finally:
+        await session.close()
 
 async def get_chat_from_db():
     async with get_connection() as conn:
@@ -370,7 +361,6 @@ async def send_to_deepseek(prompt_data):
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
     }
-
     payload = {
         "model": "deepseek-chat",
         "messages": [
@@ -380,21 +370,20 @@ async def send_to_deepseek(prompt_data):
         "temperature": 0.1,
         "response_format": { "type": "json_object" }
     }
-
-    async with aiohttp.ClientSession() as session:
+    session = create_logging_session()
+    try:
         async with session.post(
             "https://api.deepseek.com/v1/chat/completions", 
             headers=headers, 
             json=payload,
             timeout=60
-        ) as response:
-            
+        ) as response:  
             result = await response.json()
-
             content_json = result['choices'][0]['message']['content']
-
             return json.loads(content_json)
-            
+    finally:
+        await session.close()
+           
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
     
