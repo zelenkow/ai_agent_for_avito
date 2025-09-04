@@ -260,31 +260,22 @@ async def save_report_to_db(mapped_data):
             return True
          
 async def get_reports_from_db(start_date, end_date):
-    """Получает отчеты из БД за указанный период"""
     async with get_connection() as conn:
-        try:
-            # SQL запрос для получения отчетов за период
+       
             query = """
                 SELECT * FROM chat_reports 
                 WHERE created_at BETWEEN $1 AND $2 
                 ORDER BY created_at DESC
             """
-            
-            # Выполняем запрос с параметрами
+
             records = await conn.fetch(query, start_date, end_date)
-            
-            # Преобразуем записи в список словарей
+
             reports = []
             for record in records:
-                reports.append(dict(record))  # Преобразуем asyncpg.Record в dict
+                reports.append(dict(record))
                 
-            logger.info(f"Найдено отчетов за период {start_date} - {end_date}: {len(reports)}")
             return reports
-            
-        except Exception as e:
-            logger.error(f"Ошибка при получении отчетов из БД: {e}")
-            return []  # Возвращаем пустой список в случае ошибки         
-
+                   
 async def get_chats_for_analysis():
     async with get_connection() as conn:
 
@@ -525,9 +516,7 @@ def create_prompt(chat_data):
     }
 
 def format_single_report(report_data):
-    """Форматирует один отчет в красивое сообщение для Telegram"""
     
-    # Создаем строку с оценками
     grades_text = ""
     criteria = [
         ("Тональность", "tonality_grade", "tonality_comment"),
@@ -539,28 +528,24 @@ def format_single_report(report_data):
     ]
     
     for name, grade_key, comment_key in criteria:
-        grade = report_data.get(grade_key, 'Н/Д')
+        grade = report_data.get(grade_key, '')
         comment = report_data.get(comment_key, '')
-        if grade and grade != 'Н/Д':
-            grades_text += f"• <b>{name}:</b> {grade}\n"
-            if comment:
-                grades_text += f"  <i>{comment}</i>\n\n"
-        else:
-            grades_text += f"• <b>{name}:</b> Н/Д\n\n"
+        grades_text += f"• <b>{name}:</b> {grade}\n"
+        grades_text += f"  <i>{comment}</i>\n\n"
     
-    # Формируем итоговое сообщение
     return f"""
-📋 <b>Чат:</b> {report_data.get('chat_title', 'Без названия')}
-👤 <b>Клиент:</b> {report_data.get('client_name', 'Неизвестен')}
-📅 <b>Дата анализа:</b> {report_data['created_at'].strftime('%d.%m.%Y %H:%M') if report_data.get('created_at') else 'Н/Д'}
+<b>Чат:</b> {report_data.get('chat_title', '')}
+<b>Клиент:</b> {report_data.get('client_name', '')}
+<b>Дата анализа:</b> {report_data['created_at'].strftime('%d.%m.%Y %H:%M') if report_data.get('created_at') else ''}
 
 <b>Оценки качества:</b>
+
 {grades_text}
 <b>Итог:</b>
-{report_data.get('summary', 'Нет информации')}
+{report_data.get('summary', '')}
 
 <b>Рекомендации:</b>
-{report_data.get('recommendations', 'Нет рекомендаций')}
+{report_data.get('recommendations', '')}
 """
 
 @asynccontextmanager
@@ -618,17 +603,17 @@ async def custom_report(callback: types.CallbackQuery):
 async def process_date_period(message: types.Message):
     start_str, end_str = message.text.split('-')
     start_date = datetime.strptime(start_str, '%d.%m.%Y')
-    end_date = datetime.strptime(end_str, '%d.%m.%Y')
+    end_date = datetime.strptime(end_str, '%d.%m.%Y').replace(hour=23, minute=59, second=59)
     reports = await get_reports_from_db(start_date, end_date)
 
     if not reports:
-        await message.answer(f"За период {start_str} - {end_str} отчетов не найдено.")
+        await message.answer(f"За период {start_str} - {end_str} отчеты отсутсвуют.")
         return
     
-    for report in reports:
+    for report in reports[:5]:
         report_text = format_single_report(report)
         await message.answer(report_text, parse_mode='HTML')
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0)
 
     await message.answer("Отчеты за указанный период сформированы!")  
 
