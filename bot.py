@@ -4,12 +4,11 @@ import aiohttp
 import asyncpg
 import json
 import asyncio
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from contextlib import asynccontextmanager
 from datetime import datetime
 from cachetools import TTLCache
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
