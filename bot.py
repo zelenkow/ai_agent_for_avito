@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -31,20 +31,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
-
-def create_logging_session():
-    trace_config = aiohttp.TraceConfig()
-    
-    async def on_request_start(_, __, params):
-        logger.info(f"🌐 HTTP Request: {params.method} {params.url}")
-
-    async def on_request_end(_, __, params):
-        logger.info(f"🌐 HTTP Response: {params.url} -> {params.response.status}")
-
-    trace_config.on_request_start.append(on_request_start)
-    trace_config.on_request_end.append(on_request_end)
-    
-    return aiohttp.ClientSession(trace_configs=[trace_config])
 
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
@@ -307,8 +293,7 @@ async def get_avito_token():
         'client_secret': CLIENT_SECRET,
         'grant_type': 'client_credentials'
     }
-    session = create_logging_session()
-    try:    
+    async with aiohttp.ClientSession() as session:   
         async with session.post(
             "https://api.avito.ru/token",
             data=data_api,
@@ -317,34 +302,26 @@ async def get_avito_token():
             new_token = token_data["access_token"]
             token_cache['avito_token'] = new_token
             return new_token
-    finally:
-        await session.close()
-
+        
 async def get_avito_chats(access_token):
     headers =  {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100,'offset': 0}
     url = f"https://api.avito.ru/messenger/v2/accounts/{DIKON_ID}/chats"
 
-    session = create_logging_session()
-    try:
+    async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as response:
             raw_chats = await response.json()
-            return raw_chats
-    finally:
-        await session.close()   
+            return raw_chats   
 
 async def get_avito_messages(access_token, chat_id):
     headers = {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100, 'offset': 0}
     url = f"https://api.avito.ru/messenger/v3/accounts/{DIKON_ID}/chats/{chat_id}/messages"
 
-    session = create_logging_session()
-    try:
+    async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as response:
             raw_messages = await response.json()
             return raw_messages
-    finally:
-        await session.close()
 
 async def get_chat_from_db():
     async with get_connection() as conn:
@@ -552,8 +529,7 @@ async def send_to_deepseek(prompt_data):
         "temperature": 0.1,
         "response_format": { "type": "json_object" }
     }
-    session = create_logging_session()
-    try:
+    async with aiohttp.ClientSession() as session:
         async with session.post(
             "https://api.deepseek.com/v1/chat/completions", 
             headers=headers, 
@@ -563,8 +539,6 @@ async def send_to_deepseek(prompt_data):
             result = await response.json()
             content_json = result['choices'][0]['message']['content']
             return json.loads(content_json)
-    finally:
-        await session.close()
            
 @asynccontextmanager
 async def get_connection():
