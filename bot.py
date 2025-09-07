@@ -77,11 +77,22 @@ def map_avito_messages(raw_messages_data, chat_id):
 def map_response_llm (response, chat_id, chat_data):
     chat_title = chat_data.get('chat_title', '')
     client_name = chat_data.get('chat_client_name', '')
+    chat_created_at = chat_data.get('chat_created_at', '')
+    chat_updated_at = chat_data.get('chat_updated_at', '')
+    total_messages = chat_data.get('total_messages', 0)
+    company_messages = chat_data.get('company_messages', 0)
+    client_messages = chat_data.get('client_messages', 0)
     
     mapped_data = {
         'chat_id': chat_id,
+        'created_at': datetime.now(),
         'chat_title': chat_title,
         'client_name': client_name,
+        'chat_created_at': chat_created_at,
+        'chat_updated_at': chat_updated_at,
+        'total_messages': total_messages,
+        'company_messages': company_messages,
+        'client_messages': client_messages,
         'tonality_grade': response.get('tonality', {}).get('grade', ''),
         'tonality_comment': response.get('tonality', {}).get('comment', ''),
         'professionalism_grade': response.get('professionalism', {}).get('grade', ''),
@@ -95,10 +106,8 @@ def map_response_llm (response, chat_id, chat_data):
         'closure_grade': response.get('closure', {}).get('grade', ''),
         'closure_comment': response.get('closure', {}).get('comment', ''),
         'summary': response.get('summary', ''),
-        'recommendations': response.get('recommendations', ''),
-        'created_at': datetime.now()
+        'recommendations': response.get('recommendations', '')
     }
-    
     return mapped_data
 
 def create_prompt(chat_data):
@@ -192,26 +201,30 @@ def format_single_report(report_data):
         ("Работа с возражениями", "objection_handling_grade", "objection_handling_comment"),
         ("Завершение", "closure_grade", "closure_comment")
     ]
-    
     for name, grade_key, comment_key in criteria:
         grade = report_data.get(grade_key, '')
         comment = report_data.get(comment_key, '')
         grades_text += f"• <b>{name}:</b> {grade}\n"
         grades_text += f"  <i>{comment}</i>\n\n"
-    
     return f"""
-<b>Чат:</b> {report_data.get('chat_title', '')}
-<b>Клиент:</b> {report_data.get('client_name', '')}
-<b>Дата анализа:</b> {report_data['created_at'].strftime('%d.%m.%Y %H:%M') if report_data.get('created_at') else ''}
 
-<b>Оценки качества:</b>
+<b>Чат по обьявлению:</b> {report_data.get('chat_title', '')}
+<b>Клиент:</b> {report_data.get('client_name', '')}
+<b>Дата создания:</b> {report_data.get('chat_created_at', '')}
+<b>Дата последнего сообщения:</b> {report_data.get('chat_updated_at', '')}
+
+<b>Общее количество сообщений:</b> {report_data.get('total_messages', 0)}
+<b>Кол-во от менеджера:</b> {report_data.get('company_messages', 0)}
+<b>Кол-во от клиента:</b> {report_data.get('client_messages', 0)}
+  
+<b>Оценка ИИ:</b>
 
 {grades_text}
 <b>Итог:</b>
-{report_data.get('summary', '')}
+<i>{report_data.get('summary', '')}</i>
 
 <b>Рекомендации:</b>
-{report_data.get('recommendations', '')}
+<i>{report_data.get('recommendations', '')}</i>
 """
 
 async def main_avito_data(access_token):
@@ -234,19 +247,23 @@ async def main_avito_data(access_token):
         
 async def main_llm_data():
     chat_ids = await get_chats_for_analysis()
-    
+
     if not chat_ids:
         logger.info("Нет новых чатов для анализа.")
         return
     
-    semaphore = asyncio.Semaphore(20)
+    chat_ids = chat_ids[:10] #Ограничение для теста
+    semaphore = asyncio.Semaphore(10)
     
     tasks = []
     for chat_id in chat_ids:
         task = analyze_single_chat(chat_id, semaphore)
         tasks.append(task)
     
-    await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error(result)
     
     logger.info(f"Анализ {len(chat_ids)} чатов завершен")
 
@@ -386,16 +403,22 @@ async def save_report_to_db(mapped_data):
              
             query = """
                 INSERT INTO chat_reports
-                    (chat_id, chat_title, client_name, 
-                    tonality_grade, tonality_comment, professionalism_grade, professionalism_comment,
-                    clarity_grade, clarity_comment, problem_solving_grade, problem_solving_comment,
-                    objection_handling_grade, objection_handling_comment, closure_grade, closure_comment, 
-                    summary, recommendations, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                    (chat_id, created_at, chat_title, client_name,  chat_created_at, chat_updated_at,
+                    total_messages, company_messages, client_messages, tonality_grade, tonality_comment, 
+                    professionalism_grade, professionalism_comment, clarity_grade, clarity_comment, 
+                    problem_solving_grade, problem_solving_comment, objection_handling_grade, 
+                    objection_handling_comment, closure_grade, closure_comment, summary, recommendations)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
                 ON CONFLICT (chat_id)
                 DO UPDATE SET
                     chat_title = EXCLUDED.chat_title,
+                    created_at = EXCLUDED.created_at,
                     client_name = EXCLUDED.client_name,
+                    chat_created_at = EXCLUDED.chat_created_at,
+                    chat_updated_at = EXCLUDED.chat_updated_at,
+                    total_messages = EXCLUDED.total_messages,
+                    company_messages = EXCLUDED.company_messages,
+                    client_messages = EXCLUDED.client_messages,
                     tonality_grade = EXCLUDED.tonality_grade,
                     tonality_comment = EXCLUDED.tonality_comment,
                     professionalism_grade = EXCLUDED.professionalism_grade,
@@ -409,16 +432,21 @@ async def save_report_to_db(mapped_data):
                     closure_grade = EXCLUDED.closure_grade,
                     closure_comment = EXCLUDED.closure_comment,
                     summary = EXCLUDED.summary,
-                    recommendations = EXCLUDED.recommendations,
-                    created_at = EXCLUDED.created_at
+                    recommendations = EXCLUDED.recommendations
                 WHERE EXCLUDED.created_at > chat_reports.created_at
             """
 
             await conn.execute(
                 query,
                 mapped_data['chat_id'],
+                mapped_data['created_at'],
                 mapped_data['chat_title'],
                 mapped_data['client_name'],
+                mapped_data['chat_created_at'],
+                mapped_data['chat_updated_at'],
+                mapped_data['total_messages'],
+                mapped_data['company_messages'],
+                mapped_data['client_messages'],
                 mapped_data['tonality_grade'],
                 mapped_data['tonality_comment'],
                 mapped_data['professionalism_grade'],
@@ -432,8 +460,7 @@ async def save_report_to_db(mapped_data):
                 mapped_data['closure_grade'],
                 mapped_data['closure_comment'],
                 mapped_data['summary'],
-                mapped_data['recommendations'],
-                mapped_data['created_at']
+                mapped_data['recommendations']
             )
 
             return True
@@ -450,7 +477,7 @@ async def get_reports_from_db(start_date, end_date):
             records = await conn.fetch(query, start_date, end_date)
 
             reports = []
-            for record in records:
+            for record in records[:1]: #Ограничение для теста
                 reports.append(dict(record))
                 
             return reports
@@ -490,17 +517,22 @@ async def get_chat_data_for_analysis(chat_id):
                 chats.chat_id,
                 chats.title,
                 chats.client_name,
+                chats.created_at,
+                chats.updated_at,
                 json_agg(
                     json_build_object(
                         'text', messages.text,
                         'is_from_company', messages.is_from_company,
                         'created_at', messages.created_at
                     ) ORDER BY messages.created_at ASC
-                ) as messages
+                ) as messages,
+            COUNT(messages.message_id) as total_messages,
+            COUNT(messages.message_id) FILTER (WHERE messages.is_from_company = true) as company_messages,
+            COUNT(messages.message_id) FILTER (WHERE messages.is_from_company = false) as client_messages    
             FROM chats
             LEFT JOIN messages ON chats.chat_id = messages.chat_id
             WHERE chats.chat_id = $1
-            GROUP BY chats.chat_id, chats.title, chats.client_name
+            GROUP BY chats.chat_id, chats.title, chats.client_name, chats.created_at, chats.updated_at
         """
         record = await conn.fetchrow(query, chat_id)
 
@@ -510,7 +542,12 @@ async def get_chat_data_for_analysis(chat_id):
             'chat_id': record['chat_id'],
             'chat_title': record['title'],
             'chat_client_name': record['client_name'],
-            'messages': messages
+            'chat_created_at': record['created_at'],
+            'chat_updated_at': record['updated_at'],
+            'messages': messages,
+            'total_messages': record['total_messages'] or 0,
+            'company_messages': record['company_messages'] or 0,
+            'client_messages': record['client_messages'] or 0
         }
         
         return chat_data
@@ -589,7 +626,7 @@ async def process_date_period(message: types.Message):
         await message.answer(f"За период {start_str} - {end_str} отчеты отсутсвуют.")
         return
     
-    for report in reports[:5]:
+    for report in reports:
         report_text = format_single_report(report)
         await message.answer(report_text, parse_mode='HTML')
         await asyncio.sleep(1.0)
