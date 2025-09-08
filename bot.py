@@ -4,12 +4,21 @@ import aiohttp
 import asyncpg
 import json
 import asyncio
+import argparse
+import config
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from cachetools import TTLCache
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
+
+class ReportState(StatesGroup):
+    waiting_for_start_date = State()
+    waiting_for_end_date = State()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,12 +219,13 @@ def format_single_report(report_data):
 
 <b>Чат по обьявлению:</b> {report_data.get('chat_title', '')}
 <b>Клиент:</b> {report_data.get('client_name', '')}
-<b>Дата создания:</b> {report_data.get('chat_created_at', '')}
-<b>Дата последнего сообщения:</b> {report_data.get('chat_updated_at', '')}
+<b>Дата создания:</b> {report_data['chat_created_at'].strftime('%d.%m.%Y') if report_data.get('chat_created_at') else ''}
+<b>Дата последнего сообщения:</b> {report_data['chat_updated_at'].strftime('%d.%m.%Y') if report_data.get('chat_updated_at') else ''}
 
 <b>Общее количество сообщений:</b> {report_data.get('total_messages', 0)}
-<b>Кол-во от менеджера:</b> {report_data.get('company_messages', 0)}
-<b>Кол-во от клиента:</b> {report_data.get('client_messages', 0)}
+<b>Сообщений от менеджера:</b> {report_data.get('company_messages', 0)}
+<b>Сообщений от клиента:</b> {report_data.get('client_messages', 0)}
+<b>Дата анализа:</b> {report_data['created_at'].strftime('%d.%m.%Y') if report_data.get('created_at') else ''}
   
 <b>Оценка ИИ:</b>
 
@@ -227,6 +237,35 @@ def format_single_report(report_data):
 <i>{report_data.get('recommendations', '')}</i>
 """
 
+def get_main_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.row(types.KeyboardButton(text="Отчет за период"))
+    return builder.as_markup(resize_keyboard=True)
+
+async def send_reports_on_timer():
+        yesterday = datetime.now() - timedelta(days=1)
+        start_date = yesterday.replace(hour=0, minute=0, second=0)
+        end_date = yesterday.replace(hour=23, minute=59, second=59)
+        
+        reports = await get_reports_from_db(start_date, end_date)
+        
+        for client_chat_id in config.CLIENT_TELEGRAM_IDS:
+                
+                await bot.send_message(
+                    chat_id=client_chat_id,
+                    text=f"<b>Ежедневный отчет за {yesterday.strftime('%d.%m.%Y')}</b>\n\n"
+                         f"Всего отчетов: {len(reports)}",
+                    parse_mode='HTML'
+                )   
+                for report in reports:
+                    report_text = format_single_report(report)
+                    await bot.send_message(
+                        chat_id=client_chat_id,
+                        text=report_text,
+                        parse_mode='HTML'
+                    )
+                    await asyncio.sleep(2.0)          
+                
 async def main_avito_data(access_token):
     raw_data_chats = await get_avito_chats(access_token)
     map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
@@ -252,7 +291,7 @@ async def main_llm_data():
         logger.info("Нет новых чатов для анализа.")
         return
     
-    chat_ids = chat_ids[:10] #Ограничение для теста
+    chat_ids = chat_ids[:3] #Ограничение для теста
     semaphore = asyncio.Semaphore(10)
     
     tasks = []
@@ -264,7 +303,7 @@ async def main_llm_data():
     for result in results:
         if isinstance(result, Exception):
             logger.error(result)
-    
+
     logger.info(f"Анализ {len(chat_ids)} чатов завершен")
 
 async def analyze_single_chat(chat_id, semaphore):
@@ -273,7 +312,7 @@ async def analyze_single_chat(chat_id, semaphore):
             prompt_data = create_prompt(chat_data)
             analysis_result = await send_to_deepseek(prompt_data)
             mapped_data = map_response_llm(analysis_result, chat_id, chat_data)
-            await save_report_to_db(mapped_data)
+            await save_reports_to_db(mapped_data)
 
 async def create_db_pool():
     return await asyncpg.create_pool(
@@ -296,7 +335,10 @@ async def on_shutdown():
     global db_pool
     if db_pool:
         await db_pool.close()
-        logger.info("Пул соединений БД закрыт")    
+        logger.info("Пул соединений БД закрыт")   
+
+    if hasattr(bot, 'session') and bot.session:
+        await bot.session.close()     
 
 async def get_avito_token():
     if 'avito_token' in token_cache:
@@ -398,7 +440,7 @@ async def save_messages_to_db(messages_list):
 
         return True
     
-async def save_report_to_db(mapped_data):
+async def save_reports_to_db(mapped_data):
          async with get_connection() as conn:
              
             query = """
@@ -477,7 +519,7 @@ async def get_reports_from_db(start_date, end_date):
             records = await conn.fetch(query, start_date, end_date)
 
             reports = []
-            for record in records[:1]: #Ограничение для теста
+            for record in records:
                 reports.append(dict(record))
                 
             return reports
@@ -576,7 +618,7 @@ async def send_to_deepseek(prompt_data):
             result = await response.json()
             content_json = result['choices'][0]['message']['content']
             return json.loads(content_json)
-           
+          
 @asynccontextmanager
 async def get_connection():
     connection = await db_pool.acquire()
@@ -585,61 +627,106 @@ async def get_connection():
     finally:
         await db_pool.release(connection) 
 
-@dp.message(Command("avito"))
-async def start(message: types.Message):
-    await message.answer("Начинаю синхронизацию данных с Авито")
-    token = await get_avito_token()
-    await main_avito_data(token)
-    await message.answer("Синхронизация данных с Авито успешно завершена")
+@dp.message(Command("myid"))
+async def cmd_myid(message: types.Message):
+    await message.answer(f"Ваш ID: {message.chat.id}")
 
-@dp.message(Command("llm"))
-async def start(message: types.Message):
-    await message.answer("Начинаю ИИ-Анализ данных")
-    await main_llm_data()
-    await message.answer("ИИ-Анализ данных завершен успешно")
-
-@dp.message(Command("report"))
-async def report(message: types.Message):
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
     await message.answer(
-        "Введите период в формате:\n"
-        "ДД.ММ.ГГГГ-ДД.ММ.ГГГГ\n\n"
-        "Пример:\n"
-        "01.02.2025-23.02.2025"
+        "Добро пожаловать! Я бот для анализа диалогов Авито",
+        reply_markup=get_main_keyboard()
     )
 
-@dp.message(lambda message: (
-    message.text and
-    '-' in message.text and
-    len(message.text.split('-')) == 2 and
-    all(part.count('.') == 2 for part in message.text.split('-')) and
-    all(len(part.split('.')) == 3 for part in message.text.split('-')) and
-    all(component.isdigit() for part in message.text.split('-') for component in part.split('.')) and
-    all(len(part.split('.')[2]) == 4 for part in message.text.split('-'))
-))
-async def process_date_period(message: types.Message):
-    start_str, end_str = message.text.split('-')
-    start_date = datetime.strptime(start_str, '%d.%m.%Y')
-    end_date = datetime.strptime(end_str, '%d.%m.%Y').replace(hour=23, minute=59, second=59)
-    reports = await get_reports_from_db(start_date, end_date)
+@dp.message(lambda message: message.text == "Отчет за период")
+async def cmd_report(message: types.Message, state: FSMContext):
+    await message.answer(
+        "Введите начальную дату периода\n\n"
+        "Пример: 01.09.2025",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    await state.set_state(ReportState.waiting_for_start_date)
 
-    if not reports:
-        await message.answer(f"За период {start_str} - {end_str} отчеты отсутсвуют.")
+@dp.message(ReportState.waiting_for_start_date)
+async def process_start_date(message: types.Message, state: FSMContext):
+    if not message.text or not isinstance(message.text, str):
+        await message.answer("Неверный формат даты, попробуйте еще раз:")
         return
-    
-    for report in reports:
-        report_text = format_single_report(report)
-        await message.answer(report_text, parse_mode='HTML')
-        await asyncio.sleep(1.0)
+    try:
+        start_date = datetime.strptime(message.text, '%d.%m.%Y')
+        await state.update_data(start_date=start_date)
+        await message.answer(
+            "Введите конечную дату периода\n\n"
+            "Пример: 15.09.2025",
+        )
+        await state.set_state(ReportState.waiting_for_end_date)
+    except ValueError:
+        await message.answer("Неверный формат даты, попробуйте еще раз:")
 
-    await message.answer("Отчеты за указанный период сформированы!")  
+@dp.message(ReportState.waiting_for_end_date)
+async def process_end_date(message: types.Message, state: FSMContext):
+    if not message.text or not isinstance(message.text, str):
+        await message.answer("Неверный формат даты, попробуйте еще раз:")
+        return
+    try:
+        end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
+        end_date = end_date_input.replace(hour=23, minute=59, second=59)
+        data = await state.get_data()
+        start_date = data['start_date']
+        await state.clear()
+        reports = await get_reports_from_db(start_date, end_date)
+
+        if not reports:
+            await message.answer("Отчеты за указанный период отсутствуют")
+            return
+
+        for report in reports:
+            report_text = format_single_report(report)
+            await message.answer(report_text, parse_mode='HTML')
+            await asyncio.sleep(2.0)
+
+        await message.answer("Отчеты за указанный период сформированы!")
+
+    except ValueError:
+        await message.answer("Неверный формат даты, попробуйте еще раз:")
 
 @dp.message()
-async def send_way(message: types.Message):
-    await message.answer("Don't Do It")
+async def block_all_messages(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if current_state is None:
+        await message.answer(
+            "<b>Ввод недоступен</b>\n\n"
+            "Пожалуйста, используйте кнопку ниже:",
+            parse_mode='HTML',
+            reply_markup=get_main_keyboard()
+        )
 
 if __name__ == "__main__":
 
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--command')
+    args = parser.parse_args()
 
-    dp.run_polling(bot)
+    if args.command in ['avito', 'llm', 'timer']:
+        async def main():
+            await on_startup()
+            
+            if args.command == 'avito':
+                token = await get_avito_token()
+                await main_avito_data(token)
+
+            elif args.command == 'llm':
+                await main_llm_data()
+
+            elif args.command == 'timer':
+                await send_reports_on_timer()    
+                
+            await on_shutdown()
+        
+        asyncio.run(main())
+    
+    else:
+        dp.startup.register(on_startup)
+        dp.shutdown.register(on_shutdown)
+        dp.run_polling(bot)
