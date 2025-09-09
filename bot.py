@@ -5,7 +5,7 @@ import asyncpg
 import json
 import asyncio
 import argparse
-import src.config as config
+import config
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from cachetools import TTLCache
