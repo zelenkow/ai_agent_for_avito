@@ -5,7 +5,6 @@ import asyncpg
 import json
 import asyncio
 import argparse
-import config
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from cachetools import TTLCache
@@ -24,6 +23,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+CLIENT_TELEGRAM_IDS = [int(x) for x in os.getenv('CLIENT_TELEGRAM_IDS', '').split(',') if x]
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
@@ -249,7 +250,7 @@ async def send_reports_on_timer():
         
         reports = await get_reports_from_db(start_date, end_date)
         
-        for client_chat_id in config.CLIENT_TELEGRAM_IDS:
+        for client_chat_id in CLIENT_TELEGRAM_IDS:
                 
                 await bot.send_message(
                     chat_id=client_chat_id,
@@ -266,8 +267,9 @@ async def send_reports_on_timer():
                     )
                     await asyncio.sleep(2.0)          
                 
-async def main_avito_data(access_token):
-    raw_data_chats = await get_avito_chats(access_token)
+async def main_avito_data():
+    token = await get_avito_token()
+    raw_data_chats = await get_avito_chats(token)
     map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
     await save_chats_to_db(map_data_chats)
     
@@ -275,7 +277,7 @@ async def main_avito_data(access_token):
     chats_list = await get_chat_from_db()
         
     for chat_id in chats_list:
-        raw_messages = await get_avito_messages(access_token, chat_id)
+        raw_messages = await get_avito_messages(token, chat_id)
         mapped_messages = map_avito_messages(raw_messages, chat_id)
         all_messages_to_save.extend(mapped_messages)
         
@@ -713,8 +715,7 @@ if __name__ == "__main__":
             await on_startup()
             
             if args.command == 'avito':
-                token = await get_avito_token()
-                await main_avito_data(token)
+                await main_avito_data()
 
             elif args.command == 'llm':
                 await main_llm_data()
