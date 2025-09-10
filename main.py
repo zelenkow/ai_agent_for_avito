@@ -244,6 +244,7 @@ def get_main_keyboard():
     return builder.as_markup(resize_keyboard=True)
 
 async def send_reports_on_timer():
+    try:    
         yesterday = datetime.now() - timedelta(days=1)
         start_date = yesterday.replace(hour=0, minute=0, second=0)
         end_date = yesterday.replace(hour=23, minute=59, second=59)
@@ -265,56 +266,74 @@ async def send_reports_on_timer():
                         text=report_text,
                         parse_mode='HTML'
                     )
-                    await asyncio.sleep(2.0)          
+                    await asyncio.sleep(2.0)
+
+    except Exception as e:
+        logger.error(f"Ошибка в функции send_reports_on_timer: {e}")
+        return False                       
                 
 async def main_avito_data():
-    token = await get_avito_token()
-    raw_data_chats = await get_avito_chats(token)
-    map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
-    await save_chats_to_db(map_data_chats)
+    try:
+        token = await get_avito_token()
+        raw_data_chats = await get_avito_chats(token)
+        map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
+        await save_chats_to_db(map_data_chats)
     
-    all_messages_to_save = []
-    chats_list = await get_chat_from_db()
-        
-    for chat_id in chats_list:
-        raw_messages = await get_avito_messages(token, chat_id)
-        mapped_messages = map_avito_messages(raw_messages, chat_id)
-        all_messages_to_save.extend(mapped_messages)
-        
-    await save_messages_to_db(all_messages_to_save)
+        all_messages_to_save = []
+        chats_list = await get_chat_from_db()
 
-    logger.info("Cинхронизация данных с Авито завершена успешно")
-    return True
+        logger.info("Чаты получены, начинаю синхронизацию сообщений...")
+        
+        for chat_id in chats_list:
+            raw_messages = await get_avito_messages(token, chat_id)
+            mapped_messages = map_avito_messages(raw_messages, chat_id)
+            all_messages_to_save.extend(mapped_messages)
+        
+        await save_messages_to_db(all_messages_to_save)
+        logger.info("Cинхронизация данных с Авито завершена успешно")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Ошибка функции main_avito_data: {e}")
+        return False
         
 async def main_llm_data():
-    chat_ids = await get_chats_for_analysis()
+    try:
+        logger.info("Получение чатов для анализа")
+        chat_ids = await get_chats_for_analysis()
 
-    if not chat_ids:
-        logger.info("Нет новых чатов для анализа.")
-        return
-    
-    chat_ids = chat_ids[:3] #Ограничение для теста
-    semaphore = asyncio.Semaphore(10)
-    
-    tasks = []
-    for chat_id in chat_ids:
-        task = analyze_single_chat(chat_id, semaphore)
-        tasks.append(task)
-    
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for result in results:
-        if isinstance(result, Exception):
-            logger.error(result)
+        if not chat_ids:
+            logger.info("Нет новых чатов для анализа.")
+            return True
+        logger.info("Чаты получены, начинаю анализ...")
+        chat_ids = chat_ids[:3]
+        semaphore = asyncio.Semaphore(10)
 
-    logger.info(f"Анализ {len(chat_ids)} чатов завершен")
-
-async def analyze_single_chat(chat_id, semaphore):
-    async with semaphore:
-            chat_data = await get_chat_data_for_analysis(chat_id)
-            prompt_data = create_prompt(chat_data)
-            analysis_result = await send_to_deepseek(prompt_data)
-            mapped_data = map_response_llm(analysis_result, chat_id, chat_data)
-            await save_reports_to_db(mapped_data)
+        async def process_chat(chat_id):
+            async with semaphore:
+                try:
+                    chat_data = await get_chat_data_for_analysis(chat_id)
+                    prompt_data = create_prompt(chat_data)
+                    analysis_result = await send_to_deepseek(prompt_data)
+                    mapped_data = map_response_llm(analysis_result, chat_id, chat_data)
+                    await save_reports_to_db(mapped_data)
+                    return True
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке чата {chat_id}: {e}")
+                    raise e
+    
+        tasks = [process_chat(chat_id) for chat_id in chat_ids]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Ошибка задачи: {result}")
+    
+        logger.info(f"Анализ {len(chat_ids)} чатов завершен")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка функции main_llm_data: {e}")
+        return False
 
 async def create_db_pool():
     return await asyncpg.create_pool(
@@ -651,46 +670,56 @@ async def cmd_report(message: types.Message, state: FSMContext):
 
 @dp.message(ReportState.waiting_for_start_date)
 async def process_start_date(message: types.Message, state: FSMContext):
-    if not message.text or not isinstance(message.text, str):
-        await message.answer("Неверный формат даты, попробуйте еще раз:")
-        return
     try:
-        start_date = datetime.strptime(message.text, '%d.%m.%Y')
-        await state.update_data(start_date=start_date)
-        await message.answer(
-            "Введите конечную дату периода\n\n"
-            "Пример: 15.09.2025",
-        )
-        await state.set_state(ReportState.waiting_for_end_date)
-    except ValueError:
-        await message.answer("Неверный формат даты, попробуйте еще раз:")
+        if not message.text or not isinstance(message.text, str):
+            await message.answer("Неверный формат даты, попробуйте еще раз:")
+            return
+        try:
+            start_date = datetime.strptime(message.text, '%d.%m.%Y')
+            await state.update_data(start_date=start_date)
+            await message.answer(
+                "Введите конечную дату периода\n\n"
+                "Пример: 15.09.2025",
+            )
+            await state.set_state(ReportState.waiting_for_end_date)
+        except ValueError:
+            await message.answer("Неверный формат даты, попробуйте еще раз:")
 
+    except Exception as e:
+        logger.error(f"Ошибка функции process_start_data: {e}")
+        await message.answer("Произошла внутренняя ошибка. Попробуйте снова.")
+                
 @dp.message(ReportState.waiting_for_end_date)
 async def process_end_date(message: types.Message, state: FSMContext):
-    if not message.text or not isinstance(message.text, str):
-        await message.answer("Неверный формат даты, попробуйте еще раз:")
-        return
     try:
-        end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
-        end_date = end_date_input.replace(hour=23, minute=59, second=59)
-        data = await state.get_data()
-        start_date = data['start_date']
-        await state.clear()
-        reports = await get_reports_from_db(start_date, end_date)
-
-        if not reports:
-            await message.answer("Отчеты за указанный период отсутствуют")
+        if not message.text or not isinstance(message.text, str):
+            await message.answer("Неверный формат даты, попробуйте еще раз:")
             return
+        try:
+            end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
+            end_date = end_date_input.replace(hour=23, minute=59, second=59)
+            data = await state.get_data()
+            start_date = data['start_date']
+            await state.clear()
+            reports = await get_reports_from_db(start_date, end_date)
 
-        for report in reports:
-            report_text = format_single_report(report)
-            await message.answer(report_text, parse_mode='HTML')
-            await asyncio.sleep(2.0)
+            if not reports:
+                await message.answer("Отчеты за указанный период отсутствуют")
+                return
 
-        await message.answer("Отчеты за указанный период сформированы!")
+            for report in reports:
+                report_text = format_single_report(report)
+                await message.answer(report_text, parse_mode='HTML')
+                await asyncio.sleep(2.0)
 
-    except ValueError:
-        await message.answer("Неверный формат даты, попробуйте еще раз:")
+            await message.answer("Отчеты за указанный период сформированы!")
+
+        except ValueError:
+            await message.answer("Неверный формат даты, попробуйте еще раз:")
+
+    except Exception as e:
+        logger.error(f"Ошибка функции process_end_date: {e}")
+        await message.answer("Произошла внутренняя ошибка. Попробуйте снова.")        
 
 @dp.message()
 async def block_all_messages(message: types.Message, state: FSMContext):

@@ -2,4 +2,3 @@ analyst/
 .env
 source analyst/bin/activate
 sudo service postgresql start (status)
-__pycache__/
