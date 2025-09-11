@@ -4,7 +4,6 @@ import aiohttp
 import asyncpg
 import json
 import asyncio
-import argparse
 from aiogram import BaseMiddleware
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -63,11 +62,11 @@ def setup_scheduler():
     scheduler = AsyncIOScheduler(timezone=moscow_tz)
     scheduler.add_job(
         scheduled_avito_task,
-        CronTrigger(hour=12, minute=50, timezone=moscow_tz), # '4,8,12,16,20'
+        CronTrigger(hour='4,8,12,16,20', minute=0, timezone=moscow_tz),
     )
     scheduler.add_job(
         scheduled_llm_task,
-        CronTrigger(hour=13, minute=20, timezone=moscow_tz), # '0,6,12,18'
+        CronTrigger(hour='0,6,12,18', minute=0, timezone=moscow_tz),
     )
     scheduler.add_job(
         scheduled_reports_task,
@@ -781,28 +780,6 @@ async def block_all_messages(message: types.Message, state: FSMContext):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--command')
-    args = parser.parse_args()
-
-    if args.command in ['avito', 'llm', 'timer']:
-        async def main():
-            await on_startup()
-            
-            if args.command == 'avito':
-                await main_avito_data()
-
-            elif args.command == 'llm':
-                await main_llm_data()
-
-            elif args.command == 'timer':
-                await send_reports_on_timer()    
-                
-            await on_shutdown()
-        
-        asyncio.run(main())
-    
-    else:
-        dp.startup.register(on_startup)
-        dp.shutdown.register(on_shutdown)
-        dp.run_polling(bot)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    dp.run_polling(bot)
