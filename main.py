@@ -5,6 +5,7 @@ import asyncpg
 import json
 import asyncio
 import argparse
+from aiogram import BaseMiddleware
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from cachetools import TTLCache
@@ -14,10 +15,23 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 class ReportState(StatesGroup):
     waiting_for_start_date = State()
     waiting_for_end_date = State()
+
+class AccessMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: types.Message, data):
+        if not isinstance(event, types.Message):
+            return await handler(event, data)
+
+        if event.from_user.id not in CLIENT_TELEGRAM_IDS:
+            await event.answer("Доступ запрещен")
+            return 
+        
+        return await handler(event, data)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,8 +53,34 @@ PG_PASSWORD = os.getenv("PG_PASSWORD")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+dp.message.middleware(AccessMiddleware())
 db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
+
+def setup_scheduler():
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        scheduled_avito_task,
+        CronTrigger(hour='4,8,12,16,20', minute=0),
+    )
+    scheduler.add_job(
+        scheduled_llm_task,
+        CronTrigger(hour='0,6,12,18', minute=0),
+    )
+    scheduler.add_job(
+        scheduled_reports_task,
+        CronTrigger(hour=9, minute=20),
+    )
+    return scheduler
+
+async def scheduled_avito_task():
+    await main_avito_data()
+
+async def scheduled_llm_task():
+    await main_llm_data()
+
+async def scheduled_reports_task():
+    await send_reports_on_timer()      
 
 def map_avito_chats(raw_chats_data, my_user_id):
     mapped_chats = []
@@ -306,7 +346,7 @@ async def main_llm_data():
             logger.info("Нет новых чатов для анализа.")
             return True
         logger.info("Чаты получены, начинаю анализ...")
-        chat_ids = chat_ids[:3]
+
         semaphore = asyncio.Semaphore(10)
 
         async def process_chat(chat_id):
@@ -351,6 +391,10 @@ async def on_startup():
     global db_pool
     db_pool = await create_db_pool()
     logger.info("Пул соединений БД открыт")
+
+    scheduler = setup_scheduler()
+    scheduler.start()
+    logger.info("Планировщик запущен")
 
 async def on_shutdown():
     global db_pool
