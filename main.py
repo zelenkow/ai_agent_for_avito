@@ -7,7 +7,7 @@ import asyncio
 import argparse
 from aiogram import BaseMiddleware
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from cachetools import TTLCache
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
@@ -36,6 +36,8 @@ class AccessMiddleware(BaseMiddleware):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+moscow_tz = timezone(timedelta(hours=3))
+
 load_dotenv()
 CLIENT_TELEGRAM_IDS = [int(x) for x in os.getenv('CLIENT_TELEGRAM_IDS', '').split(',') if x]
 
@@ -58,18 +60,18 @@ db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
 
 def setup_scheduler():
-    scheduler = AsyncIOScheduler()
+    scheduler = AsyncIOScheduler(timezone=moscow_tz)
     scheduler.add_job(
         scheduled_avito_task,
-        CronTrigger(hour='4,8,12,16,20', minute=0),
+        CronTrigger(hour=12, minute=50, timezone=moscow_tz), # '4,8,12,16,20'
     )
     scheduler.add_job(
         scheduled_llm_task,
-        CronTrigger(hour='0,6,12,18', minute=0),
+        CronTrigger(hour=13, minute=20, timezone=moscow_tz), # '0,6,12,18'
     )
     scheduler.add_job(
         scheduled_reports_task,
-        CronTrigger(hour=9, minute=20),
+        CronTrigger(hour=9, minute=0, timezone=moscow_tz),
     )
     return scheduler
 
