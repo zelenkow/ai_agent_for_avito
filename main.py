@@ -25,10 +25,16 @@ class AccessMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.Message, data):
         if not isinstance(event, types.Message):
             return await handler(event, data)
-
-        if event.from_user.id not in CLIENT_TELEGRAM_IDS:
-            await event.answer("Доступ запрещен")
-            return 
+        
+        user_id = event.from_user.id
+        
+        if user_id not in CLIENT_TELEGRAM_IDS:
+            await event.answer(
+                f"Доступ запрещен\n\n"
+                f"Ваш ID: {user_id}\n"
+                f"Для получения доступа обратитесь к администратору"
+            )
+            return
         
         return await handler(event, data)
 
