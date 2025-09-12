@@ -1,14 +1,12 @@
 import os
 import logging
 import aiohttp
-import asyncpg
 import json
 import asyncio
+import database
 from aiogram import BaseMiddleware
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from cachetools import TTLCache
-from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
@@ -16,6 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
 
 class ReportState(StatesGroup):
     waiting_for_start_date = State()
@@ -41,27 +40,17 @@ class AccessMiddleware(BaseMiddleware):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-moscow_tz = timezone(timedelta(hours=3))
-
-load_dotenv()
 CLIENT_TELEGRAM_IDS = [int(x) for x in os.getenv('CLIENT_TELEGRAM_IDS', '').split(',') if x]
-
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CLIENT_ID = os.getenv("AVITO_CLIENT_ID")
 CLIENT_SECRET = os.getenv("AVITO_CLIENT_SECRET")
 DIKON_ID = os.getenv("DIKON_USER_ID")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-PG_HOST = os.getenv("PG_HOST")
-PG_PORT = os.getenv("PG_PORT")
-PG_DATABASE = os.getenv("PG_DATABASE")
-PG_USER = os.getenv("PG_USER")
-PG_PASSWORD = os.getenv("PG_PASSWORD")
-
+moscow_tz = timezone(timedelta(hours=3))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 dp.message.middleware(AccessMiddleware())
-db_pool = None
 token_cache = TTLCache(maxsize=1, ttl=23.5 * 60 * 60)
 
 def setup_scheduler():
@@ -89,13 +78,13 @@ async def scheduled_llm_task():
 async def scheduled_reports_task():
     await send_reports_on_timer()      
 
-def map_avito_chats(raw_chats_data, my_user_id):
+def map_avito_chats(raw_chats_data, DIKON_ID):
     mapped_chats = []
     
     for chat in raw_chats_data.get('chats', []):
         client_name = ''
         for user in chat.get('users', []):
-            if user.get('id') != my_user_id and user.get('name'):
+            if user.get('id') != DIKON_ID and user.get('name'):
                 client_name = user['name']
                 break
 
@@ -296,7 +285,7 @@ async def send_reports_on_timer():
         start_date = yesterday.replace(hour=0, minute=0, second=0)
         end_date = yesterday.replace(hour=23, minute=59, second=59)
         
-        reports = await get_reports_from_db(start_date, end_date)
+        reports = await database.get_reports_from_db(start_date, end_date)
         
         for client_chat_id in CLIENT_TELEGRAM_IDS:
                 
@@ -324,10 +313,10 @@ async def main_avito_data():
         token = await get_avito_token()
         raw_data_chats = await get_avito_chats(token)
         map_data_chats = map_avito_chats(raw_data_chats, DIKON_ID)
-        await save_chats_to_db(map_data_chats)
+        await database.save_chats_to_db(map_data_chats)
     
         all_messages_to_save = []
-        chats_list = await get_chat_from_db()
+        chats_list = await database.get_chat_from_db()
 
         logger.info("Чаты получены, начинаю синхронизацию сообщений...")
         
@@ -336,7 +325,7 @@ async def main_avito_data():
             mapped_messages = map_avito_messages(raw_messages, chat_id)
             all_messages_to_save.extend(mapped_messages)
         
-        await save_messages_to_db(all_messages_to_save)
+        await database.save_messages_to_db(all_messages_to_save)
         logger.info("Cинхронизация данных с Авито завершена успешно")
         return True
     
@@ -347,7 +336,7 @@ async def main_avito_data():
 async def main_llm_data():
     try:
         logger.info("Получение чатов для анализа")
-        chat_ids = await get_chats_for_analysis()
+        chat_ids = await database.get_chats_for_analysis()
 
         if not chat_ids:
             logger.info("Нет новых чатов для анализа.")
@@ -359,11 +348,11 @@ async def main_llm_data():
         async def process_chat(chat_id):
             async with semaphore:
                 try:
-                    chat_data = await get_chat_data_for_analysis(chat_id)
+                    chat_data = await database.get_chat_data_for_analysis(chat_id)
                     prompt_data = create_prompt(chat_data)
                     analysis_result = await send_to_deepseek(prompt_data)
                     mapped_data = map_response_llm(analysis_result, chat_id, chat_data)
-                    await save_reports_to_db(mapped_data)
+                    await database.save_reports_to_db(mapped_data)
                     return True
                 except Exception as e:
                     logger.error(f"Ошибка при обработке чата {chat_id}: {e}")
@@ -381,37 +370,7 @@ async def main_llm_data():
     except Exception as e:
         logger.error(f"Ошибка функции main_llm_data: {e}")
         return False
-
-async def create_db_pool():
-    return await asyncpg.create_pool(
-        user=PG_USER,
-        password=PG_PASSWORD,
-        host=PG_HOST,
-        port=PG_PORT,
-        database=PG_DATABASE,
-        min_size=5,
-        max_size=30,
-        timeout=30
-    )
-
-async def on_startup():
-    global db_pool
-    db_pool = await create_db_pool()
-    logger.info("Пул соединений БД открыт")
-
-    scheduler = setup_scheduler()
-    scheduler.start()
-    logger.info("Планировщик запущен")
-
-async def on_shutdown():
-    global db_pool
-    if db_pool:
-        await db_pool.close()
-        logger.info("Пул соединений БД закрыт")   
-
-    if hasattr(bot, 'session') and bot.session:
-        await bot.session.close()     
-
+ 
 async def get_avito_token():
     if 'avito_token' in token_cache:
         logger.info("Используется кешированный токен")
@@ -454,218 +413,6 @@ async def get_avito_messages(access_token, chat_id):
             raw_messages = await response.json()
             return raw_messages
 
-async def get_chat_from_db():
-    async with get_connection() as conn:
-
-        query = "SELECT chat_id FROM chats;"
-        chat_ids = await conn.fetch(query)
-        chats_list = [record['chat_id'] for record in chat_ids]
-        return chats_list
-
-async def save_chats_to_db(mapped_chats):
-    async with get_connection() as conn:
-
-        query = """
-            INSERT INTO chats (chat_id, title, client_name, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (chat_id)
-            DO UPDATE SET
-                updated_at = EXCLUDED.updated_at
-            WHERE EXCLUDED.updated_at > chats.updated_at    
-        """
-    
-        for chat in mapped_chats:
-            await conn.execute(
-                query,
-                chat['chat_id'],
-                chat['title'],
-                chat['client_name'],
-                chat['created_at'],
-                chat['updated_at'],
-            )
-
-        return True
-
-async def save_messages_to_db(messages_list):
-    async with get_connection() as conn:
-    
-        query = """
-            INSERT INTO messages 
-                (message_id, chat_id, text, is_from_company, created_at)
-            VALUES 
-                ($1, $2, $3, $4, $5)
-            ON CONFLICT (message_id) 
-            DO NOTHING
-        """
-        
-        records = []
-        for msg in messages_list:
-            records.append((
-                msg['message_id'],
-                msg['chat_id'],
-                msg['text'],
-                msg['is_from_company'],
-                msg['created_at'],
-            ))
-        
-        await conn.executemany(query, records)
-
-        return True
-    
-async def save_reports_to_db(mapped_data):
-         async with get_connection() as conn:
-             
-            query = """
-                INSERT INTO chat_reports
-                    (chat_id, created_at, chat_title, client_name,  chat_created_at, chat_updated_at,
-                    total_messages, company_messages, client_messages, tonality_grade, tonality_comment, 
-                    professionalism_grade, professionalism_comment, clarity_grade, clarity_comment, 
-                    problem_solving_grade, problem_solving_comment, objection_handling_grade, 
-                    objection_handling_comment, closure_grade, closure_comment, summary, recommendations)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-                ON CONFLICT (chat_id)
-                DO UPDATE SET
-                    chat_title = EXCLUDED.chat_title,
-                    created_at = EXCLUDED.created_at,
-                    client_name = EXCLUDED.client_name,
-                    chat_created_at = EXCLUDED.chat_created_at,
-                    chat_updated_at = EXCLUDED.chat_updated_at,
-                    total_messages = EXCLUDED.total_messages,
-                    company_messages = EXCLUDED.company_messages,
-                    client_messages = EXCLUDED.client_messages,
-                    tonality_grade = EXCLUDED.tonality_grade,
-                    tonality_comment = EXCLUDED.tonality_comment,
-                    professionalism_grade = EXCLUDED.professionalism_grade,
-                    professionalism_comment = EXCLUDED.professionalism_comment,
-                    clarity_grade = EXCLUDED.clarity_grade,
-                    clarity_comment = EXCLUDED.clarity_comment,
-                    problem_solving_grade = EXCLUDED.problem_solving_grade,
-                    problem_solving_comment = EXCLUDED.problem_solving_comment,
-                    objection_handling_grade = EXCLUDED.objection_handling_grade,
-                    objection_handling_comment = EXCLUDED.objection_handling_comment,
-                    closure_grade = EXCLUDED.closure_grade,
-                    closure_comment = EXCLUDED.closure_comment,
-                    summary = EXCLUDED.summary,
-                    recommendations = EXCLUDED.recommendations
-                WHERE EXCLUDED.created_at > chat_reports.created_at
-            """
-
-            await conn.execute(
-                query,
-                mapped_data['chat_id'],
-                mapped_data['created_at'],
-                mapped_data['chat_title'],
-                mapped_data['client_name'],
-                mapped_data['chat_created_at'],
-                mapped_data['chat_updated_at'],
-                mapped_data['total_messages'],
-                mapped_data['company_messages'],
-                mapped_data['client_messages'],
-                mapped_data['tonality_grade'],
-                mapped_data['tonality_comment'],
-                mapped_data['professionalism_grade'],
-                mapped_data['professionalism_comment'],
-                mapped_data['clarity_grade'],
-                mapped_data['clarity_comment'],
-                mapped_data['problem_solving_grade'],
-                mapped_data['problem_solving_comment'],
-                mapped_data['objection_handling_grade'],
-                mapped_data['objection_handling_comment'],
-                mapped_data['closure_grade'],
-                mapped_data['closure_comment'],
-                mapped_data['summary'],
-                mapped_data['recommendations']
-            )
-
-            return True
-         
-async def get_reports_from_db(start_date, end_date):
-    async with get_connection() as conn:
-       
-            query = """
-                SELECT * FROM chat_reports 
-                WHERE created_at BETWEEN $1 AND $2 
-                ORDER BY created_at DESC
-            """
-
-            records = await conn.fetch(query, start_date, end_date)
-
-            reports = []
-            for record in records:
-                reports.append(dict(record))
-                
-            return reports
-                   
-async def get_chats_for_analysis():
-    async with get_connection() as conn:
-
-        query = """
-            SELECT 
-                chats.chat_id
-            FROM 
-                chats
-            LEFT JOIN 
-                chat_reports ON chats.chat_id = chat_reports.chat_id
-            WHERE 
-                chat_reports.chat_id IS NULL 
-                OR 
-                chats.updated_at > chat_reports.created_at
-            ORDER BY 
-                chats.updated_at DESC;
-        """
-
-        records = await conn.fetch(query)
-
-        chat_ids_for_analysis = []
-        for record in records:
-            chat_id = record['chat_id']
-            chat_ids_for_analysis.append(chat_id)
-
-        return chat_ids_for_analysis
-
-async def get_chat_data_for_analysis(chat_id):
-    async with get_connection() as conn:
-
-        query = """
-            SELECT 
-                chats.chat_id,
-                chats.title,
-                chats.client_name,
-                chats.created_at,
-                chats.updated_at,
-                json_agg(
-                    json_build_object(
-                        'text', messages.text,
-                        'is_from_company', messages.is_from_company,
-                        'created_at', messages.created_at
-                    ) ORDER BY messages.created_at ASC
-                ) as messages,
-            COUNT(messages.message_id) as total_messages,
-            COUNT(messages.message_id) FILTER (WHERE messages.is_from_company = true) as company_messages,
-            COUNT(messages.message_id) FILTER (WHERE messages.is_from_company = false) as client_messages    
-            FROM chats
-            LEFT JOIN messages ON chats.chat_id = messages.chat_id
-            WHERE chats.chat_id = $1
-            GROUP BY chats.chat_id, chats.title, chats.client_name, chats.created_at, chats.updated_at
-        """
-        record = await conn.fetchrow(query, chat_id)
-
-        messages = json.loads(record['messages']) if record['messages'] else []
-
-        chat_data = {
-            'chat_id': record['chat_id'],
-            'chat_title': record['title'],
-            'chat_client_name': record['client_name'],
-            'chat_created_at': record['created_at'],
-            'chat_updated_at': record['updated_at'],
-            'messages': messages,
-            'total_messages': record['total_messages'] or 0,
-            'company_messages': record['company_messages'] or 0,
-            'client_messages': record['client_messages'] or 0
-        }
-        
-        return chat_data
-
 async def send_to_deepseek(prompt_data):
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -690,18 +437,6 @@ async def send_to_deepseek(prompt_data):
             result = await response.json()
             content_json = result['choices'][0]['message']['content']
             return json.loads(content_json)
-          
-@asynccontextmanager
-async def get_connection():
-    connection = await db_pool.acquire()
-    try:
-        yield connection
-    finally:
-        await db_pool.release(connection) 
-
-@dp.message(Command("myid"))
-async def cmd_myid(message: types.Message):
-    await message.answer(f"Ваш ID: {message.chat.id}")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -752,7 +487,7 @@ async def process_end_date(message: types.Message, state: FSMContext):
             data = await state.get_data()
             start_date = data['start_date']
             await state.clear()
-            reports = await get_reports_from_db(start_date, end_date)
+            reports = await database.get_reports_from_db(start_date, end_date)
 
             if not reports:
                 await message.answer("Отчеты за указанный период отсутствуют")
@@ -783,9 +518,3 @@ async def block_all_messages(message: types.Message, state: FSMContext):
             parse_mode='HTML',
             reply_markup=get_main_keyboard()
         )
-
-if __name__ == "__main__":
-
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    dp.run_polling(bot)
