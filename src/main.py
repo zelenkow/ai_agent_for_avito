@@ -281,8 +281,9 @@ if __name__ == "__main__":
 
         finally:
             if 'scheduler' in locals():
-                scheduler.shutdown()
+                scheduler.shutdown() 
             await database.close_db_pool()
-            await bot.session.close()
+            if bot.session:
+                await bot.session.close()
 
     asyncio.run(main())

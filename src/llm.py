@@ -2,10 +2,12 @@ import os
 import aiohttp
 import json
 from dotenv import load_dotenv
+from retry_config import api_retry
 
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+@api_retry
 async def send_to_deepseek(prompt_data):
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
