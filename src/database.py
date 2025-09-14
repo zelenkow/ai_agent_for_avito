@@ -3,10 +3,12 @@ import json
 from contextlib import asynccontextmanager
 import logging
 import os
+from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 PG_HOST = os.getenv("PG_HOST")
 PG_PORT = os.getenv("PG_PORT")
 PG_DATABASE = os.getenv("PG_DATABASE")
@@ -58,6 +60,7 @@ async def get_chat_from_db():
     
 async def save_chats_to_db(mapped_chats):
     async with get_connection() as conn:
+        inserted_count = 0
 
         query = """
             INSERT INTO chats (chat_id, title, client_name, created_at, updated_at)
@@ -65,11 +68,12 @@ async def save_chats_to_db(mapped_chats):
             ON CONFLICT (chat_id)
             DO UPDATE SET
                 updated_at = EXCLUDED.updated_at
-            WHERE EXCLUDED.updated_at > chats.updated_at    
+            WHERE EXCLUDED.updated_at > chats.updated_at
+            RETURNING xmax::text   
         """
     
         for chat in mapped_chats:
-            await conn.execute(
+            result = await conn.fetchval(
                 query,
                 chat['chat_id'],
                 chat['title'],
@@ -77,7 +81,10 @@ async def save_chats_to_db(mapped_chats):
                 chat['created_at'],
                 chat['updated_at'],
             )
+            if result == '0':
+                inserted_count += 1
 
+        logger.info(f"В БД добавлено: {inserted_count} чатов")
         return True
     
 async def save_messages_to_db(messages_list):

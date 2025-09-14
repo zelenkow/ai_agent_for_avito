@@ -1,2 +1,5 @@
 analyst/
 .env
+__pycache__/
+source analyst/bin/activate
+sudo service postgresql start
