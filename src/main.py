@@ -2,6 +2,7 @@ import os
 import logging
 import argparse
 import asyncio
+import random
 import database
 import avito
 import utils
@@ -101,11 +102,9 @@ async def main_avito_data():
         
         await database.save_messages_to_db(all_messages_to_save)
         logger.info("Cинхронизация данных с Авито завершена успешно")
-        return True
     
     except Exception as e:
         logger.error(f"Ошибка функции main_avito_data: {e}")
-        return False
         
 async def main_llm_data():
     try:
@@ -114,7 +113,7 @@ async def main_llm_data():
 
         if not chat_ids:
             logger.info("Нет новых чатов для анализа.")
-            return True
+
         logger.info("Чаты получены, начинаю анализ...")
 
         semaphore = asyncio.Semaphore(10)
@@ -127,10 +126,9 @@ async def main_llm_data():
                     analysis_result = await llm.send_to_deepseek(prompt_data)
                     mapped_data = utils.map_response_llm(analysis_result, chat_id, chat_data)
                     await database.save_reports_to_db(mapped_data)
-                    return True
+
                 except Exception as e:
                     logger.error(f"Ошибка при обработке чата {chat_id}: {e}")
-                    raise e
     
         tasks = [process_chat(chat_id) for chat_id in chat_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -140,11 +138,10 @@ async def main_llm_data():
                 logger.error(f"Ошибка задачи: {result}")
     
         logger.info(f"Анализ {len(chat_ids)} чатов завершен")
-        return True
+
     except Exception as e:
         logger.error(f"Ошибка функции main_llm_data: {e}")
-        return False
-    
+ 
 async def send_reports_on_timer():
     try:    
         yesterday = datetime.now() - timedelta(days=1)
@@ -168,11 +165,10 @@ async def send_reports_on_timer():
                         text=report_text,
                         parse_mode='HTML'
                     )
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(random.uniform(1.5, 3.5))
 
     except Exception as e:
-        logger.error(f"Ошибка в функции send_reports_on_timer: {e}")
-        return False        
+        logger.error(f"Ошибка в функции send_reports_on_timer: {e}")       
  
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -232,7 +228,7 @@ async def process_end_date(message: types.Message, state: FSMContext):
             for report in reports:
                 report_text = utils.format_single_report(report)
                 await message.answer(report_text, parse_mode='HTML')
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(random.uniform(1.5, 3.5))
 
             await message.answer("Отчеты за указанный период сформированы!")
 

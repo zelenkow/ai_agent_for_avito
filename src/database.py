@@ -85,7 +85,6 @@ async def save_chats_to_db(mapped_chats):
                 inserted_count += 1
 
         logger.info(f"В БД добавлено: {inserted_count} чатов")
-        return True
     
 async def save_messages_to_db(messages_list):
     async with get_connection() as conn:
@@ -110,8 +109,6 @@ async def save_messages_to_db(messages_list):
             ))
         
         await conn.executemany(query, records)
-
-        return True
     
 async def save_reports_to_db(mapped_data):
          async with get_connection() as conn:
@@ -177,8 +174,6 @@ async def save_reports_to_db(mapped_data):
                 mapped_data['summary'],
                 mapped_data['recommendations']
             )
-
-            return True 
 
 async def get_reports_from_db(start_date, end_date):
     async with get_connection() as conn:
