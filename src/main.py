@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from aiogram import BaseMiddleware
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
@@ -23,35 +22,16 @@ class ReportState(StatesGroup):
     waiting_for_start_date = State()
     waiting_for_end_date = State()
 
-class AccessMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event: types.Message, data):
-        if not isinstance(event, types.Message):
-            return await handler(event, data)
-        
-        user_id = event.from_user.id
-        
-        if user_id not in CLIENT_TELEGRAM_IDS:
-            await event.answer(
-                f"Доступ запрещен\n\n"
-                f"Ваш ID: {user_id}\n"
-                f"Для получения доступа обратитесь к администратору"
-            )
-            return
-        
-        return await handler(event, data)
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-CLIENT_TELEGRAM_IDS = [int(x) for x in os.getenv('CLIENT_TELEGRAM_IDS', '').split(',') if x]
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DIKON_ID = os.getenv("DIKON_USER_ID")
 
 moscow_tz = timezone(timedelta(hours=3))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-dp.message.middleware(AccessMiddleware())
 
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
@@ -149,11 +129,12 @@ async def send_reports_on_timer():
         end_date = yesterday.replace(hour=23, minute=59, second=59)
         
         reports = await database.get_reports_from_db(start_date, end_date)
+        users = await database.get_all_active_users()
         
-        for client_chat_id in CLIENT_TELEGRAM_IDS:
+        for user in users:
                 
                 await bot.send_message(
-                    chat_id=client_chat_id,
+                    chat_id=user,
                     text=f"<b>Ежедневный отчет за {yesterday.strftime('%d.%m.%Y')}</b>\n\n"
                          f"Всего отчетов: {len(reports)}",
                     parse_mode='HTML'
@@ -161,7 +142,7 @@ async def send_reports_on_timer():
                 for report in reports:
                     report_text = utils.format_single_report(report)
                     await bot.send_message(
-                        chat_id=client_chat_id,
+                        chat_id=user,
                         text=report_text,
                         parse_mode='HTML'
                     )
@@ -169,20 +150,54 @@ async def send_reports_on_timer():
 
     except Exception as e:
         logger.error(f"Ошибка в функции send_reports_on_timer: {e}")       
- 
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(
-        "Добро пожаловать! Я бот для анализа диалогов Авито",
-        reply_markup=get_main_keyboard()
-    )
+    user = message.from_user
+    user_data = {
+        'user_id': message.from_user.id,
+        'username': message.from_user.username,
+        'first_name': message.from_user.first_name,
+        'last_name': message.from_user.last_name
+    }
+    await database.add_user_to_db(user_data)
 
-@dp.message(lambda message: message.text == "Отчет за период")
+    name = user.first_name
+    welcome_text = f"""
+👋 <b>Добро пожаловать, {name}!</b>
+
+🤖 Я - бот для анализа диалогов Авито
+
+📊 <b>Что я умею:</b>
+• Автоматически анализировать переписки с клиентами
+• Формировать отчеты по качеству коммуникации
+• Присылать ежедневные отчеты
+• Присылать отчеты за выбранный период
+
+💡 <b>Как получить отчет:</b>
+• Нажмите кнопку в меню <b>"Сформировать отчет"</b>
+или
+• Используйте команду /report
+
+После этого введите дату начала периода и дату конца периода
+
+⏰ <b>Ежедневная рассылка:</b>
+Отчеты будут приходить автоматически каждый день в 10:00
+
+ℹ️  <b>Для подробной справки по боту:</b>
+• Нажмите кнопку в меню <b>"Помощь"</b>
+или
+• Используйте команду /help
+
+Рад быть полезным! 🚀
+"""
+    await message.answer(welcome_text, parse_mode='HTML')
+
+@dp.message(Command("report"))
 async def cmd_report(message: types.Message, state: FSMContext):
     await message.answer(
         "Введите начальную дату периода\n\n"
         "Пример: 01.09.2025",
-        reply_markup=types.ReplyKeyboardRemove()
     )
     await state.set_state(ReportState.waiting_for_start_date)
 
@@ -213,6 +228,7 @@ async def process_end_date(message: types.Message, state: FSMContext):
         if not message.text or not isinstance(message.text, str):
             await message.answer("Неверный формат даты, попробуйте еще раз:")
             return
+        
         try:
             end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
             end_date = end_date_input.replace(hour=23, minute=59, second=59)
@@ -245,12 +261,14 @@ async def block_all_messages(message: types.Message, state: FSMContext):
     
     if current_state is None:
         await message.answer(
-            "<b>Ввод недоступен</b>\n\n"
-            "Пожалуйста, используйте кнопку ниже:",
+            "<b>🤖 Команда не распознана</b>\n\n"
+            "Доступные команды:\n"
+            "• /start - Запустить бота\n"  
+            "• /report - Сформировать отчет за период\n"
+            "• /help - Помощь\n",
             parse_mode='HTML',
-            reply_markup=get_main_keyboard()
         )
-
+        
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()

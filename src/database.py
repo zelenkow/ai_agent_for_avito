@@ -261,3 +261,31 @@ async def get_chat_data_for_analysis(chat_id):
         }
         
         return chat_data
+
+async def add_user_to_db(user_data):
+    async with get_connection() as conn:
+
+        query = """
+            INSERT INTO users (user_id, username, first_name, last_name)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                last_name = EXCLUDED.last_name
+        """
+
+        await conn.execute(
+            query,
+            user_data['user_id'], 
+            user_data['username'], 
+            user_data['first_name'], 
+            user_data['last_name']
+        )
+
+async def get_all_active_users():
+    async with get_connection() as conn:
+        query = "SELECT user_id FROM users WHERE is_active = TRUE"
+        records = await conn.fetch(query)
+        user_ids = [record['user_id'] for record in records]
+        return user_ids
