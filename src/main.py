@@ -371,6 +371,15 @@ async def process_period_selection(callback: types.CallbackQuery, state: FSMCont
     await show_single_report(callback.message.chat.id, state)
     await callback.answer()
 
+@dp.message(ReportState.waiting_for_period_selection)
+async def control_period_selection(message: types.Message, state: FSMContext):
+    await message.answer(
+        "❌ <b>Пожалуйста, выберите период с помощью кнопок ниже</b>\n\n"
+        "Или используйте команду /cancel для отмены операции",
+        parse_mode='HTML',
+        reply_markup=get_period_selection_keyboard()
+    )
+
 @dp.message(ReportState.waiting_for_start_date)
 async def process_start_date(message: types.Message, state: FSMContext):
     if message.text == '/cancel':
