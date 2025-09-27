@@ -15,12 +15,12 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
-
 
 class ReportState(StatesGroup):
+    waiting_for_period_selection = State()
     waiting_for_start_date = State()
     waiting_for_end_date = State()
+    showing_reports = State()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,10 +33,35 @@ moscow_tz = timezone(timedelta(hours=3))
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-def get_main_keyboard():
-    builder = ReplyKeyboardBuilder()
-    builder.row(types.KeyboardButton(text="Отчет за период"))
-    return builder.as_markup(resize_keyboard=True)
+def get_period_selection_keyboard():
+    keyboard = [
+        [
+            types.InlineKeyboardButton(text="📅 За день", callback_data="period_day"),
+            types.InlineKeyboardButton(text="📅 За неделю", callback_data="period_week"),
+        ],
+        [
+            types.InlineKeyboardButton(text="📅 За месяц", callback_data="period_month"),
+            types.InlineKeyboardButton(text="📅 Свой период", callback_data="period_custom"),
+        ],
+        [
+            types.InlineKeyboardButton(text="❌ Отмена", callback_data="period_cancel"),
+        ]
+    ]
+    return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_reports_navigation_keyboard(current_index, total_reports, has_next):
+    keyboard = []
+    if has_next:
+        keyboard.append([
+            types.InlineKeyboardButton(
+                text=f"▶️ Следующий ({current_index + 1}/{total_reports})", 
+                callback_data="next_report"
+            )
+        ])
+    keyboard.append([
+        types.InlineKeyboardButton(text="❌ Завершить просмотр", callback_data="cancel_reports")
+    ])
+    return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def setup_scheduler():
     scheduler = AsyncIOScheduler(timezone=moscow_tz)
@@ -151,6 +176,37 @@ async def send_reports_on_timer():
     except Exception as e:
         logger.error(f"Ошибка в функции send_reports_on_timer: {e}")       
 
+async def show_single_report(chat_id, state: FSMContext):
+    data = await state.get_data()
+    reports = data['reports']
+    current_index = data['current_index']
+    total_reports = data['total_reports']
+    
+    report = reports[current_index]
+    report_text = utils.format_single_report(report)
+
+    header = f"📊 Сформировано отчетов: {total_reports}\n"
+    numbered_text = f"{header}{report_text}"
+    has_next = current_index < total_reports - 1
+    
+    if current_index == 0:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=numbered_text,
+            parse_mode='HTML',
+            reply_markup=get_reports_navigation_keyboard(current_index, total_reports, has_next)
+        )
+    else:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=data.get('last_message_id'),
+            text=numbered_text,
+            parse_mode='HTML',
+            reply_markup=get_reports_navigation_keyboard(current_index, total_reports, has_next)
+        )
+    
+    await state.set_state(ReportState.showing_reports)
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     user = message.from_user
@@ -169,23 +225,21 @@ async def cmd_start(message: types.Message):
 🤖 Я - бот для анализа диалогов Авито
 
 📊 <b>Что я умею:</b>
-• Автоматически анализировать переписки с клиентами
+• Автоматически анализировать переписки с клиентами из аккаунта Авито
 • Формировать отчеты по качеству коммуникации
 • Присылать ежедневные отчеты
-• Присылать отчеты за выбранный период
+• Показывать отчеты по требованию
 
 💡 <b>Как получить отчет:</b>
-• Нажмите кнопку в меню <b>"Сформировать отчет"</b>
+• Выберите в меню <b>"Сформировать отчет"</b>
 или
 • Используйте команду /report
-
-После этого введите дату начала периода и дату конца периода
 
 ⏰ <b>Ежедневная рассылка:</b>
 Отчеты будут приходить автоматически каждый день в 10:00
 
 ℹ️  <b>Для подробной справки по боту:</b>
-• Нажмите кнопку в меню <b>"Помощь"</b>
+• Выберите в меню <b>"Помощь"</b>
 или
 • Используйте команду /help
 
@@ -196,64 +250,241 @@ async def cmd_start(message: types.Message):
 @dp.message(Command("report"))
 async def cmd_report(message: types.Message, state: FSMContext):
     await message.answer(
-        "Введите начальную дату периода\n\n"
-        "Пример: 01.09.2025",
+        "📊 <b>Формирование отчета за период</b>\n\n"
+        "Выберите период или укажите свой:\n\n"
+        "💡 <b>Для отмены используйте команду</b> /cancel",
+        parse_mode='HTML',
+        reply_markup=get_period_selection_keyboard()
     )
-    await state.set_state(ReportState.waiting_for_start_date)
+    await state.set_state(ReportState.waiting_for_period_selection)
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    
+    if current_state is None:
+        await message.answer("❌ Нет активных операций для отмены")
+        return
+    
+    await state.clear()
+    await message.answer(
+        "✅ <b>Операция отменена</b>\n\n",
+        parse_mode='HTML'
+    )
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    help_text = """
+🤖 <b>Справка по боту анализа диалогов Авито</b>
+
+📊 <b>Основные команды:</b>
+
+• <b>/start</b> - Запустить бота и ознакомиться с возможностями
+• <b>/report</b> - Сформировать отчет за выбранный период
+• <b>/help</b> - Показать эту справку
+• <b>/cancel</b> - Отменить текущую операцию
+
+⏰ <b>Автоматические отчеты:</b>
+Бот автоматически присылает ежедневные отчеты каждый день в <b>10:00</b>
+
+📅 <b>Как получить отчет за период:</b>
+1. Нажмите <b>/report</b> или выберите в меню
+2. Выберите период из предложенных или укажите свой
+3. Если выбран "Свой период" - введите даты в формате <b>ДД.ММ.ГГГГ</b>
+4. Получите отчеты с навигацией по страницам
+
+🔍 <b>Что анализируется в отчетах:</b>
+• Тональность коммуникации
+• Профессионализм менеджера  
+• Ясность изложения информации
+• Решение проблем клиента
+• Работа с возражениями
+• Завершение диалога
+
+📱 <b>Навигация по отчетам:</b>
+• Используйте кнопку <b>"▶️ Следующий"</b> для перехода к следующему отчету
+• Кнопка <b>"❌ Завершить просмотр"</b> завершает текущую сессию
+
+⚙️ <b>Техническая информация:</b>
+• Данные синхронизируются с Авито автоматически
+• Анализ проводится с помощью AI-модели DeepSeek
+• Все отчеты сохраняются в базе данных
+
+💡 <b>Совет:</b> Для быстрого доступа к отчетам используйте команду /report
+"""
+    await message.answer(help_text, parse_mode='HTML')
+
+@dp.callback_query(ReportState.waiting_for_period_selection)
+async def process_period_selection(callback: types.CallbackQuery, state: FSMContext):
+    now = datetime.now()
+    
+    if callback.data == "period_cancel":
+        await callback.message.edit_text("✅ <b>Выбор периода отменен</b>", parse_mode='HTML')
+        await state.clear()
+        await callback.answer()
+        return
+    
+    elif callback.data == "period_day":
+        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        period_text = "сегодня"
+        
+    elif callback.data == "period_week":
+        start_date = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        period_text = "неделю"
+        
+    elif callback.data == "period_month":
+        start_date = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_date = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        period_text = "месяц"
+        
+    elif callback.data == "period_custom":
+        await callback.message.edit_text(
+            "📊 <b>Формирование отчета за период</b>\n\n"
+            "👟 <b>Шаг 1 из 2:</b> Введите начальную дату\n\n"
+            "📅 <b>Формат:</b> ДД.ММ.ГГГГ\n\n"
+            "✨ <b>Пример:</b> 01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )
+        await state.set_state(ReportState.waiting_for_start_date)
+        await callback.answer()
+        return
+    
+    await callback.message.edit_text(f"🔍 <b>Ищу отчеты за {period_text}...</b>", parse_mode='HTML')
+    
+    reports = await database.get_reports_from_db(start_date, end_date)
+
+    if not reports:
+        await callback.message.edit_text(f"❌ <b>Отчеты за {period_text} отсутствуют</b>", parse_mode='HTML')
+        await state.clear()
+        await callback.answer()
+        return
+    
+    await state.update_data(
+        reports=reports,
+        current_index=0,
+        total_reports=len(reports)
+    )
+
+    await show_single_report(callback.message.chat.id, state)
+    await callback.answer()
 
 @dp.message(ReportState.waiting_for_start_date)
 async def process_start_date(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await cmd_cancel(message, state)
+        return
+    if not message.text or not isinstance(message.text, str):
+        await message.answer(
+            "❌ <b>Не вижу дату</b>\n\n"
+            "<b>Пожалуйста, введите начальную дату в формате:</b>\n"
+            "ДД.ММ.ГГГГ\n\n"
+            "<b>Пример:</b>\n"
+            "01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )
+        return
     try:
-        if not message.text or not isinstance(message.text, str):
-            await message.answer("Неверный формат даты, попробуйте еще раз:")
-            return
-        try:
-            start_date = datetime.strptime(message.text, '%d.%m.%Y')
-            await state.update_data(start_date=start_date)
-            await message.answer(
-                "Введите конечную дату периода\n\n"
-                "Пример: 15.09.2025",
-            )
-            await state.set_state(ReportState.waiting_for_end_date)
-        except ValueError:
-            await message.answer("Неверный формат даты, попробуйте еще раз:")
-
-    except Exception as e:
-        logger.error(f"Ошибка функции process_start_data: {e}")
-        await message.answer("Произошла внутренняя ошибка. Попробуйте снова.")
+        start_date = datetime.strptime(message.text, '%d.%m.%Y')
+        await state.update_data(start_date=start_date)
+        await message.answer(
+            "📊 <b>Формирование отчета за период</b>\n\n"
+            "👟 <b>Шаг 2 из 2:</b> Введите конечную дату\n\n"
+            "📅 <b>Формат:</b> ДД.ММ.ГГГГ\n\n"
+            "✨ <b>Пример:</b> 01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )
+        await state.set_state(ReportState.waiting_for_end_date)
+    except ValueError:
+        await message.answer(
+            "❌ <b>Не вижу дату</b>\n\n"
+            "<b>Пожалуйста, введите начальную дату в формате:</b>\n"
+            "ДД.ММ.ГГГГ\n\n"
+            "<b>Пример:</b>\n"
+            "01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )
                 
 @dp.message(ReportState.waiting_for_end_date)
 async def process_end_date(message: types.Message, state: FSMContext):
+    if message.text == '/cancel':
+        await cmd_cancel(message, state)
+        return
+    if not message.text or not isinstance(message.text, str):
+        await message.answer(
+            "❌ <b>Не вижу дату</b>\n\n"
+            "<b>Пожалуйста, введите конечную дату в формате:</b>\n"
+            "ДД.ММ.ГГГГ\n\n"
+            "<b>Пример:</b>\n"
+            "01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )
+        return 
+      
     try:
-        if not message.text or not isinstance(message.text, str):
-            await message.answer("Неверный формат даты, попробуйте еще раз:")
+        end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
+        end_date = end_date_input.replace(hour=23, minute=59, second=59)
+        data = await state.get_data()
+        start_date = data['start_date']
+        
+        reports = await database.get_reports_from_db(start_date, end_date)
+
+        if not reports:
+            await message.answer("❌ <b>Отчеты за указанный период отсутствуют</b>", parse_mode='HTML')
+            await state.clear()
             return
         
-        try:
-            end_date_input = datetime.strptime(message.text, '%d.%m.%Y')
-            end_date = end_date_input.replace(hour=23, minute=59, second=59)
-            data = await state.get_data()
-            start_date = data['start_date']
-            await state.clear()
-            reports = await database.get_reports_from_db(start_date, end_date)
+        await state.update_data(
+            reports=reports,
+            current_index=0,
+            total_reports=len(reports)
+        )
 
-            if not reports:
-                await message.answer("Отчеты за указанный период отсутствуют")
-                return
+        await show_single_report(message.chat.id, state)
 
-            for report in reports:
-                report_text = utils.format_single_report(report)
-                await message.answer(report_text, parse_mode='HTML')
-                await asyncio.sleep(random.uniform(1.5, 3.5))
+    except ValueError:
+        await message.answer(
+            "❌ <b>Не вижу дату</b>\n\n"
+            "<b>Пожалуйста, введите конечную дату в формате:</b>\n"
+            "ДД.ММ.ГГГГ\n\n"
+            "<b>Пример:</b>\n"
+            "01.09.2025\n\n"
+            "💡 <b>Для отмены используйте команду</b> /cancel",
+            parse_mode='HTML'
+        )     
 
-            await message.answer("Отчеты за указанный период сформированы!")
+@dp.callback_query(lambda c: c.data == "next_report", ReportState.showing_reports)
+async def next_report_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    current_index = data['current_index']
+    
+    await state.update_data(
+        current_index=current_index + 1,
+        last_message_id=callback.message.message_id
+    )
+    
+    await show_single_report(callback.message.chat.id, state)
+    await callback.answer()
 
-        except ValueError:
-            await message.answer("Неверный формат даты, попробуйте еще раз:")
-
-    except Exception as e:
-        logger.error(f"Ошибка функции process_end_date: {e}")
-        await message.answer("Произошла внутренняя ошибка. Попробуйте снова.")        
+@dp.callback_query(lambda c: c.data == "cancel_reports", ReportState.showing_reports)
+async def cancel_reports_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    total_reports = data.get('total_reports', 0)
+    viewed_reports = data.get('current_index', 0) + 1
+    
+    await callback.message.edit_text(
+        f"✅ <b>Просмотр завершен</b>\n\n"
+        f"Просмотрено отчетов: {viewed_reports} из {total_reports}",
+        parse_mode='HTML'
+    )
+    await state.clear()
+    await callback.answer()
 
 @dp.message()
 async def block_all_messages(message: types.Message, state: FSMContext):
@@ -265,10 +496,11 @@ async def block_all_messages(message: types.Message, state: FSMContext):
             "Доступные команды:\n"
             "• /start - Запустить бота\n"  
             "• /report - Сформировать отчет за период\n"
+            "• /cancel - Отменить операцию\n"
             "• /help - Помощь\n",
             parse_mode='HTML',
         )
-        
+
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
