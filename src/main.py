@@ -233,7 +233,7 @@ async def cmd_start(message: types.Message):
 💡 <b>Как получить отчет:</b>
 • Выберите в меню <b>"Сформировать отчет"</b>
 или
-• Используйте команду /report
+• Используйте команду <b>/report</b>
 
 ⏰ <b>Ежедневная рассылка:</b>
 Отчеты будут приходить автоматически каждый день в 10:00
@@ -241,7 +241,7 @@ async def cmd_start(message: types.Message):
 ℹ️  <b>Для подробной справки по боту:</b>
 • Выберите в меню <b>"Помощь"</b>
 или
-• Используйте команду /help
+• Используйте команду <b>/help</b>
 
 Рад быть полезным! 🚀
 """
@@ -251,8 +251,7 @@ async def cmd_start(message: types.Message):
 async def cmd_report(message: types.Message, state: FSMContext):
     await message.answer(
         "📊 <b>Формирование отчета за период</b>\n\n"
-        "Выберите период или укажите свой:\n\n"
-        "💡 <b>Для отмены используйте команду</b> /cancel",
+        "Выберите период или укажите свой:",
         parse_mode='HTML',
         reply_markup=get_period_selection_keyboard()
     )
@@ -263,7 +262,7 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     
     if current_state is None:
-        await message.answer("❌ Нет активных операций для отмены")
+        await message.answer("Нет активных операций для отмены")
         return
     
     await state.clear()
@@ -282,7 +281,7 @@ async def cmd_help(message: types.Message):
 • <b>/start</b> - Запустить бота и ознакомиться с возможностями
 • <b>/report</b> - Сформировать отчет за выбранный период
 • <b>/help</b> - Показать эту справку
-• <b>/cancel</b> - Отменить текущую операцию
+• <b>/cancel</b> - Отменить операцию
 
 ⏰ <b>Автоматические отчеты:</b>
 Бот автоматически присылает ежедневные отчеты каждый день в <b>10:00</b>
@@ -310,7 +309,7 @@ async def cmd_help(message: types.Message):
 • Анализ проводится с помощью AI-модели DeepSeek
 • Все отчеты сохраняются в базе данных
 
-💡 <b>Совет:</b> Для быстрого доступа к отчетам используйте команду /report
+💡 <b>Совет:</b> Для быстрого доступа к отчетам используйте команду <b>/report</b>
 """
     await message.answer(help_text, parse_mode='HTML')
 
@@ -352,7 +351,7 @@ async def process_period_selection(callback: types.CallbackQuery, state: FSMCont
         await callback.answer()
         return
     
-    await callback.message.edit_text(f"🔍 <b>Ищу отчеты за {period_text}...</b>", parse_mode='HTML')
+    await callback.message.edit_text(f"🔍 <b>Отчеты за {period_text}...</b>", parse_mode='HTML')
     
     reports = await database.get_reports_from_db(start_date, end_date)
 
@@ -374,8 +373,7 @@ async def process_period_selection(callback: types.CallbackQuery, state: FSMCont
 @dp.message(ReportState.waiting_for_period_selection)
 async def control_period_selection(message: types.Message, state: FSMContext):
     await message.answer(
-        "❌ <b>Пожалуйста, выберите период с помощью кнопок ниже</b>\n\n"
-        "Или используйте команду /cancel для отмены операции",
+        "<b>Пожалуйста, выберите период с помощью кнопок ниже</b>",
         parse_mode='HTML',
         reply_markup=get_period_selection_keyboard()
     )
