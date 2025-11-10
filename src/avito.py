@@ -56,5 +56,10 @@ async def get_avito_messages(access_token, chat_id, DIKON_ID):
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as response:
+
+            if response.status != 200:
+                logger.error(f"HTTP {response.status} для чата {chat_id}")
+                return {"messages": []}
+            
             raw_messages = await response.json()
-            return raw_messages        
+            return raw_messages 
