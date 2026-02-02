@@ -38,10 +38,10 @@ async def get_avito_token():
             return new_token
 
 @api_retry        
-async def get_avito_chats(access_token, DIKON_ID):
+async def get_avito_chats(access_token, USER_ID):
     headers =  {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100,'offset': 0}
-    url = f"https://api.avito.ru/messenger/v2/accounts/{DIKON_ID}/chats"
+    url = f"https://api.avito.ru/messenger/v2/accounts/{USER_ID}/chats"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as response:
@@ -49,10 +49,10 @@ async def get_avito_chats(access_token, DIKON_ID):
             return raw_chats           
 
 @api_retry        
-async def get_avito_messages(access_token, chat_id, DIKON_ID):
+async def get_avito_messages(access_token, chat_id, USER_ID):
     headers = {'Authorization': f'Bearer {access_token}'}
     params = {'limit': 100, 'offset': 0}
-    url = f"https://api.avito.ru/messenger/v3/accounts/{DIKON_ID}/chats/{chat_id}/messages"
+    url = f"https://api.avito.ru/messenger/v3/accounts/{USER_ID}/chats/{chat_id}/messages"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as response:

@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 VALID_API_KEY = os.getenv("APIKEY")
+WEBHOOK = os.getenv("WEBHOOK_URL")
 
 scheduler = None
 
@@ -24,7 +25,7 @@ async def lifespan(app: FastAPI):
         await database.create_db_pool()
         scheduler = setup_scheduler()
         scheduler.start()
-        await bot.set_webhook("https://ai-agent-zelenkow.amvera.io/webhook")
+        await bot.set_webhook(WEBHOOK)
         yield
     finally:
         await database.close_db_pool()

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DIKON_ID = os.getenv("DIKON_USER_ID")
+USER_ID = os.getenv("AVITO_USER_ID")
 
 moscow_tz = timezone(timedelta(hours=3))
 bot = Bot(token=TOKEN)
@@ -91,8 +91,8 @@ async def scheduled_reports_task():
 async def main_avito_data():
     try:
         token = await avito.get_avito_token()
-        raw_data_chats = await avito.get_avito_chats(token, DIKON_ID)
-        map_data_chats = utils.map_avito_chats(raw_data_chats, DIKON_ID)
+        raw_data_chats = await avito.get_avito_chats(token, USER_ID)
+        map_data_chats = utils.map_avito_chats(raw_data_chats, USER_ID)
         await database.save_chats_to_db(map_data_chats)
     
         all_messages_to_save = []
@@ -101,7 +101,7 @@ async def main_avito_data():
         logger.info("Чаты получены, начинаю синхронизацию сообщений...")
         
         for chat_id in chats_list:
-            raw_messages = await avito.get_avito_messages(token, chat_id, DIKON_ID)
+            raw_messages = await avito.get_avito_messages(token, chat_id, USER_ID)
             mapped_messages = utils.map_avito_messages(raw_messages, chat_id)
             all_messages_to_save.extend(mapped_messages)
         
